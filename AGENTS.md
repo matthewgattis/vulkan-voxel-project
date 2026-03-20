@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions) -> `voxel` (application).
+Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions) -> `voxel` (application). The application currently renders a colored cube (`CubeMesh`) with a perspective camera.
 
 ## Build
 
@@ -39,11 +39,15 @@ Each subdirectory has its own `CMakeLists.txt`.
 ## Key Interfaces
 
 ### steel::Engine
-- `Engine(title, width, height)` — creates window and initializes Vulkan
+- `Engine(title, width, height)` — creates window and initializes Vulkan. Auto-selects largest fitting 4:3 resolution from predefined list for the primary display.
+- High-DPI support via `SDL_WINDOW_HIGH_PIXEL_DENSITY`
 - `begin_frame()` → `const vk::raii::CommandBuffer*` (nullptr if frame unavailable)
 - `end_frame()` — submits and presents
 - `wait_idle()` — waits for device idle (used for clean shutdown)
 - `poll_events()` → `bool` (false = quit requested)
+- `pick_physical_device()` validates GPU suitability: graphics+present queues, swapchain extension, surface formats, depth format support. Prefers discrete GPU.
+- Depth format is selected at runtime via `find_depth_format()` (tries D32Sfloat, D32SfloatS8Uint, D24UnormS8Uint)
+- Window resize support: `recreate_swapchain()` handles `VK_ERROR_OUT_OF_DATE_KHR` and `VK_SUBOPTIMAL_KHR`
 - Per-swapchain-image synchronization via `MAX_FRAMES_IN_FLIGHT` (defined in engine.hpp)
 - Accessors: `device()`, `physical_device()`, `render_pass()`, `extent()`, `command_pool()`, `graphics_queue()`, `graphics_family()`, `color_format()`, `depth_format()`
 - Uses spdlog for diagnostic logging
@@ -51,6 +55,7 @@ Each subdirectory has its own `CMakeLists.txt`.
 ### steel::PipelineBuilder
 - Constructor: `PipelineBuilder(device, vert_spirv, frag_spirv)` — takes SPIR-V bytecode upfront
 - Fluent API for remaining state: `set_vertex_input(bindings, attrs)`, `set_topology()`, `set_polygon_mode()`, `set_cull_mode()`, `set_depth_test()`
+- Default front face is `eClockwise` (matching Vulkan convention with Y-flipped projection)
 - `build(render_pass, layout, extent)` → `vk::raii::Pipeline`
 
 ### steel::Buffer
@@ -81,8 +86,9 @@ Each subdirectory has its own `CMakeLists.txt`.
 ### glass::Material
 - Owns a `vk::raii::Pipeline` and `vk::raii::PipelineLayout`
 - Move-only (not copyable, since it owns Vulkan RAII handles)
-- `Material::create(engine, vertex_shader, fragment_shader)` — takes `Shader` objects (not file paths)
+- `Material::create(engine, vertex_shader, fragment_shader)` — takes `Shader` objects (not file paths). Creates pipeline layout with a push constant range for `mat4 mvp` (vertex stage).
 - `bind(cmd)` — binds the pipeline
+- `layout()` → `const vk::raii::PipelineLayout&` — exposes pipeline layout for push constant binding
 
 ### glass::Renderable
 - Bundles a `Geometry` and `Material` into a single drawable unit
@@ -90,9 +96,17 @@ Each subdirectory has its own `CMakeLists.txt`.
 - `geometry()`, `material()` — const accessors
 - Move-only
 
+### glass::Camera
+- `Camera(fov_degrees, aspect_ratio, near_plane, far_plane)` — perspective camera
+- `set_position(vec3)`, `look_at(vec3)`, `set_aspect_ratio(float)` — mutators
+- `view()`, `projection()`, `view_projection()` — matrix accessors
+- Flips projection Y for Vulkan coordinate system (`projection_[1][1] *= -1`)
+
 ### glass::Renderer
 - Traverses scene graph and renders each frame
-- Uses `Engine::begin_frame()`/`end_frame()` to drive the render loop
+- `run(root, camera)` — main loop: polls events, renders frames, waits idle on exit
+- `render_frame(root, camera)` — renders a single frame
+- Pushes MVP (`view_projection * node.transform`) via push constants per draw call
 
 ### glass::SceneNode
 - Simple scene graph node: `transform` (mat4), `renderable` (`const Renderable*`), `children`
