@@ -30,7 +30,9 @@ Each subdirectory has its own `CMakeLists.txt`.
 - **Namespaces**: `steel` for Vulkan RAII wrappers, `glass` for engine abstractions, `voxel` for application code
 - **Vulkan**: Use `vk::raii::` types exclusively (RAII wrappers, no manual cleanup)
 - **Headers**: `<module>/include/<module>/` layout (e.g., `steel/include/steel/engine.hpp`)
-- **Shaders**: GLSL 450 in `voxel/shaders/`, compiled to SPIR-V by `glslc` at build time
+- **Shaders**: GLSL 450 in `voxel/shaders/`, compiled to SPIR-V by `glslc` at build time. Vertex shader uses push constants (`mat4 mvp`) for per-object transforms.
+- **Front face**: Default front face is clockwise (`vk::FrontFace::eClockwise`)
+- **Push constants**: Used for per-object MVP transforms (view_projection * node.transform), pushed per draw call
 - **Tests**: No GPU required. Test struct layouts, type traits, Vulkan struct construction, and utilities.
 - **Vulkan HPP structs**: Use member assignment or constructor syntax, not C++20 designated initializers (they do not work reliably with Vulkan HPP types)
 

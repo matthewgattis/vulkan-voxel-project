@@ -1,5 +1,6 @@
 #pragma once
 
+#include <glass/camera.hpp>
 #include <glass/scene_node.hpp>
 #include <steel/engine.hpp>
 
@@ -9,12 +10,13 @@ class Renderer {
 public:
     explicit Renderer(steel::Engine& engine);
 
-    void run(const SceneNode& root);
-    void render_frame(const SceneNode& root);
+    void run(const SceneNode& root, const Camera& camera);
+    void render_frame(const SceneNode& root, const Camera& camera);
 
 private:
     void traverse(const vk::raii::CommandBuffer& cmd,
-                  const SceneNode& node) const;
+                  const SceneNode& node,
+                  const glm::mat4& view_projection) const;
 
     steel::Engine& engine_;
 };

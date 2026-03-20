@@ -9,17 +9,47 @@
 namespace steel {
 
 Engine::Engine(std::string_view title, uint32_t width, uint32_t height) {
-    spdlog::info("steel::Engine initializing ({}x{})", width, height);
+    spdlog::info("steel::Engine initializing");
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
+    }
+
+    // Pick the largest predefined resolution that fits the primary display
+    struct Resolution { uint32_t w, h; };
+    constexpr std::array<Resolution, 9> candidates = {{
+        {3200, 2400}, {2560, 1920}, {2048, 1536}, {1600, 1200}, {1440, 1080},
+        {1280, 960}, {1024, 768}, {800, 600}, {640, 480},
+    }};
+
+    SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+    SDL_Rect usable;
+    if (primary && SDL_GetDisplayUsableBounds(primary, &usable)) {
+        bool found = false;
+        for (const auto& res : candidates) {
+            if (static_cast<int>(res.w) < usable.w &&
+                static_cast<int>(res.h) < usable.h) {
+                width = res.w;
+                height = res.h;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            width = candidates.back().w;
+            height = candidates.back().h;
+        }
+        spdlog::info("Display usable area: {}x{}, selected window size: {}x{}",
+                     usable.w, usable.h, width, height);
+    } else {
+        spdlog::warn("Could not query display, using fallback size: {}x{}", width, height);
     }
 
     window_ = SDL_CreateWindow(
         std::string(title).c_str(),
         static_cast<int>(width),
         static_cast<int>(height),
-        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 
     if (!window_) {
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
@@ -28,6 +58,7 @@ Engine::Engine(std::string_view title, uint32_t width, uint32_t height) {
     create_instance(title);
     create_surface();
     pick_physical_device();
+    depth_format_ = find_depth_format(physical_device_);
     create_device();
     create_swapchain();
     create_depth_resources();
@@ -64,6 +95,10 @@ bool Engine::poll_events() {
         if (event.type == SDL_EVENT_QUIT) {
             return false;
         }
+        if (event.type == SDL_EVENT_WINDOW_RESIZED ||
+            event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+            framebuffer_resized_ = true;
+        }
     }
     return true;
 }
@@ -78,10 +113,21 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
     (void)wait_result;
 
     // Acquire next swapchain image
-    auto [result, image_index] = swapchain_.acquireNextImage(UINT64_MAX, *image_available_[current_frame_]);
-    if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
+    vk::Result result;
+    uint32_t image_index;
+    try {
+        auto [r, i] = swapchain_.acquireNextImage(UINT64_MAX, *image_available_[current_frame_]);
+        result = r;
+        image_index = i;
+    } catch (const vk::OutOfDateKHRError&) {
+        recreate_swapchain();
         return nullptr;
     }
+
+    if (result == vk::Result::eSuboptimalKHR) {
+        framebuffer_resized_ = true;
+    }
+
     current_image_index_ = image_index;
 
     // Only reset fence after we know we'll submit work
@@ -94,7 +140,7 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
 
     // Begin render pass
     std::array<vk::ClearValue, 2> clear_values = {
-        vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.1f, 0.1f, 0.1f, 1.0f}}},
+        vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}},
         vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}},
     };
 
@@ -147,8 +193,20 @@ void Engine::end_frame() {
         current_image_index_,
     };
 
-    auto present_result = present_queue_.presentKHR(present_info);
-    (void)present_result;
+    bool needs_recreate = framebuffer_resized_;
+    try {
+        auto present_result = present_queue_.presentKHR(present_info);
+        if (present_result == vk::Result::eSuboptimalKHR) {
+            needs_recreate = true;
+        }
+    } catch (const vk::OutOfDateKHRError&) {
+        needs_recreate = true;
+    }
+
+    if (needs_recreate) {
+        framebuffer_resized_ = false;
+        recreate_swapchain();
+    }
 
     current_frame_ = (current_frame_ + 1) % static_cast<uint32_t>(swapchain_images_.size());
 }
@@ -212,23 +270,100 @@ void Engine::create_surface() {
 // Physical device
 // ---------------------------------------------------------------------------
 
+bool Engine::is_device_suitable(const vk::raii::PhysicalDevice& dev) const {
+    // Check for graphics and present queue families
+    auto queue_families = dev.getQueueFamilyProperties();
+    bool has_graphics = false;
+    bool has_present  = false;
+
+    for (uint32_t i = 0; i < queue_families.size(); ++i) {
+        if (queue_families[i].queueFlags & vk::QueueFlagBits::eGraphics) {
+            has_graphics = true;
+        }
+        if (dev.getSurfaceSupportKHR(i, *surface_)) {
+            has_present = true;
+        }
+        if (has_graphics && has_present) break;
+    }
+
+    if (!has_graphics || !has_present) return false;
+
+    // Check for swapchain extension support
+    auto extensions = dev.enumerateDeviceExtensionProperties();
+    bool has_swapchain = false;
+    for (const auto& ext : extensions) {
+        if (std::string_view(ext.extensionName.data()) == VK_KHR_SWAPCHAIN_EXTENSION_NAME) {
+            has_swapchain = true;
+            break;
+        }
+    }
+    if (!has_swapchain) return false;
+
+    // Check for at least one surface format and present mode
+    auto formats = dev.getSurfaceFormatsKHR(*surface_);
+    auto modes   = dev.getSurfacePresentModesKHR(*surface_);
+    if (formats.empty() || modes.empty()) return false;
+
+    // Check for a supported depth format
+    if (find_depth_format(dev) == vk::Format::eUndefined) return false;
+
+    return true;
+}
+
+vk::Format Engine::find_depth_format(const vk::raii::PhysicalDevice& dev) const {
+    constexpr std::array candidates = {
+        vk::Format::eD32Sfloat,
+        vk::Format::eD32SfloatS8Uint,
+        vk::Format::eD24UnormS8Uint,
+    };
+
+    for (auto format : candidates) {
+        auto props = dev.getFormatProperties(format);
+        if (props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eDepthStencilAttachment) {
+            return format;
+        }
+    }
+    return vk::Format::eUndefined;
+}
+
 void Engine::pick_physical_device() {
     auto devices = vk::raii::PhysicalDevices{instance_};
     if (devices.empty()) {
         throw std::runtime_error("No Vulkan-capable GPU found");
     }
 
-    // Prefer discrete GPU, otherwise take the first one.
-    for (auto& dev : devices) {
-        auto props = dev.getProperties();
-        if (props.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
-            physical_device_ = std::move(dev);
-            spdlog::info("Selected GPU: {} (discrete)", physical_device_.getProperties().deviceName.data());
-            return;
+    // Filter to suitable devices, then prefer discrete GPU
+    std::vector<std::pair<size_t, vk::PhysicalDeviceType>> candidates;
+    for (size_t i = 0; i < devices.size(); ++i) {
+        if (!is_device_suitable(devices[i])) {
+            auto props = devices[i].getProperties();
+            spdlog::debug("Skipping unsuitable GPU: {}", props.deviceName.data());
+            continue;
         }
+        candidates.emplace_back(i, devices[i].getProperties().deviceType);
     }
-    physical_device_ = std::move(devices[0]);
-    spdlog::info("Selected GPU: {}", physical_device_.getProperties().deviceName.data());
+
+    if (candidates.empty()) {
+        throw std::runtime_error("No suitable Vulkan GPU found (need graphics+present queues, "
+                                 "swapchain support, surface formats, and a depth format)");
+    }
+
+    // Pick best: discrete > integrated > virtual > other
+    auto score = [](vk::PhysicalDeviceType type) -> int {
+        switch (type) {
+            case vk::PhysicalDeviceType::eDiscreteGpu:   return 4;
+            case vk::PhysicalDeviceType::eIntegratedGpu: return 3;
+            case vk::PhysicalDeviceType::eVirtualGpu:    return 2;
+            default:                                     return 1;
+        }
+    };
+
+    auto best = std::ranges::max_element(candidates,
+        [&](const auto& a, const auto& b) { return score(a.second) < score(b.second); });
+
+    physical_device_ = std::move(devices[best->first]);
+    auto props = physical_device_.getProperties();
+    spdlog::info("Selected GPU: {} ({})", props.deviceName.data(), vk::to_string(props.deviceType));
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +459,8 @@ void Engine::create_swapchain() {
         image_count = capabilities.maxImageCount;
     }
 
+    vk::SwapchainKHR old_swapchain = *swapchain_;
+
     vk::SwapchainCreateInfoKHR create_info{
         {},
         *surface_,
@@ -339,6 +476,7 @@ void Engine::create_swapchain() {
         vk::CompositeAlphaFlagBitsKHR::eOpaque,
         vk::PresentModeKHR::eFifo,
         VK_TRUE,
+        old_swapchain,
     };
 
     if (graphics_family_index_ != present_family_index_) {
@@ -531,6 +669,55 @@ void Engine::create_sync_objects() {
         in_flight_fences_.emplace_back(device_, vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
     }
     spdlog::info("Created {} sync object sets for {} swapchain images", count, count);
+}
+
+// ---------------------------------------------------------------------------
+// Swapchain recreation (window resize)
+// ---------------------------------------------------------------------------
+
+void Engine::recreate_swapchain() {
+    // Handle minimized window — wait until it has a nonzero size
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(window_, &w, &h);
+    while (w == 0 || h == 0) {
+        SDL_WaitEvent(nullptr);
+        SDL_GetWindowSizeInPixels(window_, &w, &h);
+    }
+
+    device_.waitIdle();
+
+    // Check if the extent actually changed
+    auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(*surface_);
+    vk::Extent2D new_extent;
+    if (capabilities.currentExtent.width != UINT32_MAX) {
+        new_extent = capabilities.currentExtent;
+    } else {
+        new_extent = vk::Extent2D{static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
+        new_extent.width  = std::clamp(new_extent.width,
+            capabilities.minImageExtent.width,  capabilities.maxImageExtent.width);
+        new_extent.height = std::clamp(new_extent.height,
+            capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+    }
+
+    if (new_extent.width == swapchain_extent_.width &&
+        new_extent.height == swapchain_extent_.height) {
+        spdlog::debug("Swapchain recreation skipped (extent unchanged: {}x{})",
+                      new_extent.width, new_extent.height);
+        return;
+    }
+
+    // Destroy in reverse creation order
+    framebuffers_.clear();
+    depth_image_view_ = vk::raii::ImageView{nullptr};
+    depth_memory_ = vk::raii::DeviceMemory{nullptr};
+    depth_image_ = vk::raii::Image{nullptr};
+    swapchain_image_views_.clear();
+
+    create_swapchain();
+    create_depth_resources();
+    create_framebuffers();
+
+    spdlog::info("Swapchain recreated ({}x{})", swapchain_extent_.width, swapchain_extent_.height);
 }
 
 // ---------------------------------------------------------------------------

@@ -53,7 +53,10 @@ private:
     void create_framebuffers();
     void create_command_pool();
     void create_sync_objects();
+    void recreate_swapchain();
 
+    bool is_device_suitable(const vk::raii::PhysicalDevice& dev) const;
+    vk::Format find_depth_format(const vk::raii::PhysicalDevice& dev) const;
     uint32_t find_memory_type(uint32_t type_filter, vk::MemoryPropertyFlags properties) const;
 
     // SDL
@@ -79,7 +82,7 @@ private:
     std::vector<vk::raii::ImageView> swapchain_image_views_;
 
     // Depth buffer
-    static constexpr vk::Format depth_format_ = vk::Format::eD32Sfloat;
+    vk::Format                   depth_format_ = vk::Format::eD32Sfloat;
     vk::raii::Image              depth_image_      {nullptr};
     vk::raii::DeviceMemory       depth_memory_     {nullptr};
     vk::raii::ImageView          depth_image_view_ {nullptr};
@@ -99,6 +102,7 @@ private:
 
     uint32_t current_frame_ = 0;
     uint32_t current_image_index_ = 0;
+    bool framebuffer_resized_ = false;
 };
 
 } // namespace steel

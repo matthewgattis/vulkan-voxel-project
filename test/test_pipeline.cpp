@@ -30,10 +30,10 @@ TEST(RasterizationState, DefaultFillMode) {
 TEST(RasterizationState, DefaultCullModeBack) {
     vk::PipelineRasterizationStateCreateInfo raster{};
     raster.cullMode  = vk::CullModeFlagBits::eBack;
-    raster.frontFace = vk::FrontFace::eCounterClockwise;
+    raster.frontFace = vk::FrontFace::eClockwise;
 
     EXPECT_EQ(raster.cullMode, vk::CullModeFlagBits::eBack);
-    EXPECT_EQ(raster.frontFace, vk::FrontFace::eCounterClockwise);
+    EXPECT_EQ(raster.frontFace, vk::FrontFace::eClockwise);
 }
 
 TEST(RasterizationState, NoDepthClamp) {

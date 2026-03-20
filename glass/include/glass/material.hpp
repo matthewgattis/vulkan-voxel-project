@@ -13,6 +13,7 @@ public:
                            const Shader& fragment_shader);
 
     void bind(const vk::raii::CommandBuffer& cmd) const;
+    const vk::raii::PipelineLayout& layout() const { return layout_; }
 
     Material(Material&&) = default;
     Material& operator=(Material&&) = default;

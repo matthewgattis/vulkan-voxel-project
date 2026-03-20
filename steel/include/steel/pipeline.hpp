@@ -23,8 +23,8 @@ public:
     // Polygon mode (default: Fill)
     PipelineBuilder& set_polygon_mode(vk::PolygonMode mode);
 
-    // Cull mode (default: Back, counter-clockwise front face)
-    PipelineBuilder& set_cull_mode(vk::CullModeFlags cull, vk::FrontFace front = vk::FrontFace::eCounterClockwise);
+    // Cull mode (default: Back, clockwise front face)
+    PipelineBuilder& set_cull_mode(vk::CullModeFlags cull, vk::FrontFace front = vk::FrontFace::eClockwise);
 
     // Depth testing (default: enabled, Less)
     PipelineBuilder& set_depth_test(bool enable, vk::CompareOp op = vk::CompareOp::eLess);
@@ -47,7 +47,7 @@ private:
     vk::PrimitiveTopology topology_     = vk::PrimitiveTopology::eTriangleList;
     vk::PolygonMode       polygon_mode_ = vk::PolygonMode::eFill;
     vk::CullModeFlags     cull_mode_    = vk::CullModeFlagBits::eBack;
-    vk::FrontFace         front_face_   = vk::FrontFace::eCounterClockwise;
+    vk::FrontFace         front_face_   = vk::FrontFace::eClockwise;
     bool                  depth_test_   = true;
     vk::CompareOp         depth_op_     = vk::CompareOp::eLess;
 };

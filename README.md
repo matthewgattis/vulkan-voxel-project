@@ -43,10 +43,11 @@ cd build && ctest --output-on-failure
 │   ├── material    Shader pipeline wrapper
 │   ├── renderable  Bundles Geometry + Material into a drawable unit
 │   ├── scene_node  Scene graph with transforms
+│   ├── camera      Perspective camera with view/projection matrices
 │   ├── renderer    Scene graph traversal and frame rendering
 │   └── vertex      Shared vertex format (position + normal + color)
 ├── voxel/          Application executable (namespace: voxel)
-│   ├── application Triangle renderer using glass API
+│   ├── application Colored cube renderer using glass API
 │   ├── shaders/    GLSL shaders (compiled to SPIR-V via glslc)
 │   └── main        Entry point
 └── test/           Google Test suite (90 tests)
@@ -76,7 +77,7 @@ Managed via [vcpkg](https://github.com/microsoft/vcpkg) (included as a git submo
 
 Three-layer architecture: **steel** -> **glass** -> **voxel**.
 
-**steel** wraps Vulkan initialization and rendering into RAII types (`vk::raii::*`) so resources clean up automatically. The `Engine` class provides a `begin_frame()`/`end_frame()` interface with per-swapchain-image synchronization, plus `wait_idle()` for clean shutdown. `PipelineBuilder` takes SPIR-V bytecode at construction and uses a fluent API for remaining pipeline state. `Buffer` handles device-local vertex and index buffer creation with staging transfers. Diagnostic logging uses spdlog.
+**steel** wraps Vulkan initialization and rendering into RAII types (`vk::raii::*`) so resources clean up automatically. The `Engine` class provides a `begin_frame()`/`end_frame()` interface with per-swapchain-image synchronization, plus `wait_idle()` for clean shutdown. Engine auto-selects the GPU based on capability checks (queue families, swapchain extension, surface formats, depth format), and the depth format is selected at runtime. Supports window resize via swapchain recreation, high-DPI rendering, and auto-selects the largest fitting 4:3 resolution for the display. `PipelineBuilder` takes SPIR-V bytecode at construction and uses a fluent API for remaining pipeline state. `Buffer` handles device-local vertex and index buffer creation with staging transfers. Diagnostic logging uses spdlog.
 
 **glass** sits between steel and the application, providing engine-level abstractions. `Shader` loads SPIR-V from disk and exposes its bytecode and stage. `Mesh` is a data-only abstract interface returning `vertices()` and `indices()` spans. `Geometry` is created from a `Mesh`, uploading vertex and index data to the GPU. `Material` takes `Shader` objects and builds a pipeline. `Renderable` bundles a `Geometry` and `Material` into a single drawable unit. `SceneNode` provides a simple scene graph with transforms, referencing a `Renderable`. `Renderer` traverses the scene graph and drives the frame loop. Application code uses glass and never touches Vulkan objects directly.
 
