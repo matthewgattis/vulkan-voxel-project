@@ -1,0 +1,48 @@
+#include <glass/material.hpp>
+#include <glass/vertex.hpp>
+#include <steel/pipeline.hpp>
+
+#include <spdlog/spdlog.h>
+
+namespace glass {
+
+Material::Material(vk::raii::PipelineLayout layout, vk::raii::Pipeline pipeline)
+    : layout_(std::move(layout))
+    , pipeline_(std::move(pipeline)) {}
+
+void Material::bind(const vk::raii::CommandBuffer& cmd) const {
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline_);
+}
+
+Material Material::create(steel::Engine& engine,
+                           const Shader& vertex_shader,
+                           const Shader& fragment_shader) {
+    auto binding = Vertex::binding_description();
+    auto attributes = Vertex::attribute_descriptions();
+
+    vk::PipelineLayoutCreateInfo layout_info(
+        {},    // flags
+        0,     // setLayoutCount
+        nullptr, // pSetLayouts
+        0,     // pushConstantRangeCount
+        nullptr  // pPushConstantRanges
+    );
+    vk::raii::PipelineLayout layout(engine.device(), layout_info);
+
+    auto pipeline = steel::PipelineBuilder(engine.device(),
+                                            vertex_shader.spirv(),
+                                            fragment_shader.spirv())
+        .set_vertex_input(
+            std::span<const vk::VertexInputBindingDescription>(&binding, 1),
+            std::span<const vk::VertexInputAttributeDescription>(attributes))
+        .set_topology(vk::PrimitiveTopology::eTriangleList)
+        .set_cull_mode(vk::CullModeFlagBits::eBack, vk::FrontFace::eClockwise)
+        .set_depth_test(true, vk::CompareOp::eLess)
+        .build(engine.render_pass(), layout, engine.extent());
+
+    spdlog::info("Material created: pipeline and layout built");
+
+    return Material(std::move(layout), std::move(pipeline));
+}
+
+} // namespace glass

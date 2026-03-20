@@ -1,0 +1,11 @@
+build/
+cmake-build-*/
+.cache/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+compile_commands.json
+vcpkg_installed/
+vcpkg-manifest-install.log
