@@ -7,14 +7,18 @@ namespace glass {
 Renderer::Renderer(steel::Engine& engine)
     : engine_(engine) {}
 
-void Renderer::run(const SceneNode& root, const Camera& camera) {
+void Renderer::run(const SceneNode& root, Camera& camera) {
     while (engine_.poll_events()) {
         render_frame(root, camera);
     }
     engine_.wait_idle();
 }
 
-void Renderer::render_frame(const SceneNode& root, const Camera& camera) {
+void Renderer::render_frame(const SceneNode& root, Camera& camera) {
+    auto extent = engine_.extent();
+    float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    camera.set_aspect_ratio(aspect);
+
     auto* cmd = engine_.begin_frame();
     if (cmd) {
         traverse(*cmd, root, camera.view_projection());

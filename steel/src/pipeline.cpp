@@ -56,8 +56,7 @@ PipelineBuilder& PipelineBuilder::set_depth_test(bool enable, vk::CompareOp op) 
 
 vk::raii::Pipeline PipelineBuilder::build(
     const vk::raii::RenderPass&     render_pass,
-    const vk::raii::PipelineLayout& layout,
-    vk::Extent2D                    extent) {
+    const vk::raii::PipelineLayout& layout) {
 
     std::array<vk::PipelineShaderStageCreateInfo, 2> shader_stages = {{
         {{}, vk::ShaderStageFlagBits::eVertex,   *vert_module_, "main"},
@@ -76,19 +75,20 @@ vk::raii::Pipeline PipelineBuilder::build(
         VK_FALSE,
     };
 
-    vk::Viewport viewport{
-        0.0f, 0.0f,
-        static_cast<float>(extent.width),
-        static_cast<float>(extent.height),
-        0.0f, 1.0f,
+    // Dynamic viewport and scissor — set at draw time via begin_frame()
+    std::array<vk::DynamicState, 2> dynamic_states = {
+        vk::DynamicState::eViewport,
+        vk::DynamicState::eScissor,
     };
-
-    vk::Rect2D scissor{{0, 0}, extent};
+    vk::PipelineDynamicStateCreateInfo dynamic_state{
+        {},
+        dynamic_states,
+    };
 
     vk::PipelineViewportStateCreateInfo viewport_state{
         {},
-        1, &viewport,
-        1, &scissor,
+        1, nullptr,
+        1, nullptr,
     };
 
     vk::PipelineRasterizationStateCreateInfo rasterizer{
@@ -149,7 +149,7 @@ vk::raii::Pipeline PipelineBuilder::build(
         &multisampling,
         &depth_stencil,
         &color_blending,
-        nullptr,            // dynamic state
+        &dynamic_state,
         *layout,
         *render_pass,
         0,

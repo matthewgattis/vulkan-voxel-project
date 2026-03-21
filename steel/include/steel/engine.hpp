@@ -8,9 +8,9 @@
 #include <string_view>
 #include <vector>
 
-static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
-
 namespace steel {
+
+static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
 class Engine {
 public:
@@ -49,10 +49,16 @@ private:
     void create_device();
     void create_swapchain();
     void create_depth_resources();
+    void create_offscreen_target();
     void create_render_pass();
-    void create_framebuffers();
+    void create_offscreen_framebuffer();
+    void create_fxaa_render_pass();
+    void create_fxaa_framebuffers();
     void create_command_pool();
     void create_sync_objects();
+    void create_fxaa_descriptors();
+    void create_fxaa_pipeline();
+    void update_fxaa_descriptor();
     void recreate_swapchain();
 
     bool is_device_suitable(const vk::raii::PhysicalDevice& dev) const;
@@ -87,9 +93,26 @@ private:
     vk::raii::DeviceMemory       depth_memory_     {nullptr};
     vk::raii::ImageView          depth_image_view_ {nullptr};
 
-    // Render pass & framebuffers
+    // Offscreen render target (scene renders here, FXAA reads from it)
+    vk::raii::Image              offscreen_image_      {nullptr};
+    vk::raii::DeviceMemory       offscreen_memory_     {nullptr};
+    vk::raii::ImageView          offscreen_image_view_ {nullptr};
+
+    // Scene render pass & offscreen framebuffer
     vk::raii::RenderPass                render_pass_  {nullptr};
-    std::vector<vk::raii::Framebuffer>  framebuffers_;
+    vk::raii::Framebuffer               offscreen_framebuffer_ {nullptr};
+
+    // FXAA render pass & per-swapchain framebuffers
+    vk::raii::RenderPass                fxaa_render_pass_ {nullptr};
+    std::vector<vk::raii::Framebuffer>  fxaa_framebuffers_;
+
+    // FXAA pipeline resources
+    vk::raii::DescriptorSetLayout       fxaa_descriptor_set_layout_ {nullptr};
+    vk::raii::DescriptorPool            fxaa_descriptor_pool_ {nullptr};
+    vk::raii::DescriptorSet             fxaa_descriptor_set_ {nullptr};
+    vk::raii::Sampler                   fxaa_sampler_ {nullptr};
+    vk::raii::PipelineLayout            fxaa_pipeline_layout_ {nullptr};
+    vk::raii::Pipeline                  fxaa_pipeline_ {nullptr};
 
     // Commands
     vk::raii::CommandPool                command_pool_ {nullptr};

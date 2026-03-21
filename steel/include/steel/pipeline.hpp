@@ -29,11 +29,10 @@ public:
     // Depth testing (default: enabled, Less)
     PipelineBuilder& set_depth_test(bool enable, vk::CompareOp op = vk::CompareOp::eLess);
 
-    // Build the pipeline
+    // Build the pipeline (viewport/scissor are dynamic)
     vk::raii::Pipeline build(
         const vk::raii::RenderPass&     render_pass,
-        const vk::raii::PipelineLayout& layout,
-        vk::Extent2D                    extent);
+        const vk::raii::PipelineLayout& layout);
 
 private:
     const vk::raii::Device& device_;

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions) -> `voxel` (application). The application currently renders a colored cube (`CubeMesh`) with a perspective camera.
+Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions) -> `voxel` (application). The application currently renders a colored cube (`CubeMesh`) with a perspective camera. Always-on FXAA anti-aliasing is applied as a post-processing pass inside `steel::Engine`.
 
 ## Build
 
@@ -30,7 +30,7 @@ Each subdirectory has its own `CMakeLists.txt`.
 - **Namespaces**: `steel` for Vulkan RAII wrappers, `glass` for engine abstractions, `voxel` for application code
 - **Vulkan**: Use `vk::raii::` types exclusively (RAII wrappers, no manual cleanup)
 - **Headers**: `<module>/include/<module>/` layout (e.g., `steel/include/steel/engine.hpp`)
-- **Shaders**: GLSL 450 in `voxel/shaders/`, compiled to SPIR-V by `glslc` at build time. Vertex shader uses push constants (`mat4 mvp`) for per-object transforms.
+- **Shaders**: GLSL 450 in `voxel/shaders/` and `steel/shaders/`, compiled to SPIR-V by `glslc` at build time. Application shaders use push constants (`mat4 mvp`) for per-object transforms. Steel's internal FXAA shaders (`fullscreen.vert`, `fxaa.frag`) are compiled to SPIR-V and embedded as `constexpr` arrays in a generated header (not checked into git).
 - **Front face**: Default front face is clockwise (`vk::FrontFace::eClockwise`)
 - **Push constants**: Used for per-object MVP transforms (view_projection * node.transform), pushed per draw call
 - **Tests**: No GPU required. Test struct layouts, type traits, Vulkan struct construction, and utilities.
@@ -41,14 +41,15 @@ Each subdirectory has its own `CMakeLists.txt`.
 ### steel::Engine
 - `Engine(title, width, height)` — creates window and initializes Vulkan. Auto-selects largest fitting 4:3 resolution from predefined list for the primary display.
 - High-DPI support via `SDL_WINDOW_HIGH_PIXEL_DENSITY`
-- `begin_frame()` → `const vk::raii::CommandBuffer*` (nullptr if frame unavailable)
+- `begin_frame()` → `const vk::raii::CommandBuffer*` (nullptr if frame unavailable). Sets dynamic viewport and scissor from the current extent.
 - `end_frame()` — submits and presents
+- FXAA post-processing: the scene renders to an offscreen target, then an FXAA fullscreen pass reads it via a combined image sampler descriptor and writes to the swapchain. The FXAA pipeline is built directly, separate from `PipelineBuilder`. The `begin_frame()`/`end_frame()` API is unchanged — glass and voxel are unaware of FXAA.
 - `wait_idle()` — waits for device idle (used for clean shutdown)
 - `poll_events()` → `bool` (false = quit requested)
 - `pick_physical_device()` validates GPU suitability: graphics+present queues, swapchain extension, surface formats, depth format support. Prefers discrete GPU.
 - Depth format is selected at runtime via `find_depth_format()` (tries D32Sfloat, D32SfloatS8Uint, D24UnormS8Uint)
 - Window resize support: `recreate_swapchain()` handles `VK_ERROR_OUT_OF_DATE_KHR` and `VK_SUBOPTIMAL_KHR`
-- Per-swapchain-image synchronization via `MAX_FRAMES_IN_FLIGHT` (defined in engine.hpp)
+- Frames in flight: `MAX_FRAMES_IN_FLIGHT` (2, defined in engine.hpp). Command buffers, fences, and acquire semaphores are sized to `MAX_FRAMES_IN_FLIGHT`. Present (render-finished) semaphores are per-swapchain-image since the presentation engine may hold them until the image is re-acquired.
 - Accessors: `device()`, `physical_device()`, `render_pass()`, `extent()`, `command_pool()`, `graphics_queue()`, `graphics_family()`, `color_format()`, `depth_format()`
 - Uses spdlog for diagnostic logging
 
@@ -56,7 +57,7 @@ Each subdirectory has its own `CMakeLists.txt`.
 - Constructor: `PipelineBuilder(device, vert_spirv, frag_spirv)` — takes SPIR-V bytecode upfront
 - Fluent API for remaining state: `set_vertex_input(bindings, attrs)`, `set_topology()`, `set_polygon_mode()`, `set_cull_mode()`, `set_depth_test()`
 - Default front face is `eClockwise` (matching Vulkan convention with Y-flipped projection)
-- `build(render_pass, layout, extent)` → `vk::raii::Pipeline`
+- `build(render_pass, layout)` → `vk::raii::Pipeline` — viewport and scissor are dynamic state (set at draw time via `begin_frame()`), so pipelines do not need to be recreated on window resize
 
 ### steel::Buffer
 - `Buffer::create_vertex_buffer(device, physical_device, command_pool, queue, data)` — staging upload to device-local vertex buffer
@@ -104,8 +105,9 @@ Each subdirectory has its own `CMakeLists.txt`.
 
 ### glass::Renderer
 - Traverses scene graph and renders each frame
-- `run(root, camera)` — main loop: polls events, renders frames, waits idle on exit
-- `render_frame(root, camera)` — renders a single frame
+- `run(root, camera)` — main loop: polls events, renders frames, waits idle on exit. Takes `Camera&` (non-const) since it updates the aspect ratio each frame.
+- `render_frame(root, camera)` — renders a single frame. Takes `Camera&` (non-const).
+- Updates camera aspect ratio each frame from the engine's current extent, so resize works correctly
 - Pushes MVP (`view_projection * node.transform`) via push constants per draw call
 
 ### glass::SceneNode
@@ -118,5 +120,6 @@ Each subdirectory has its own `CMakeLists.txt`.
 - New glass features: add files under `glass/src/` and `glass/include/glass/`, update `glass/CMakeLists.txt`
 - New application features: add under `voxel/src/` and `voxel/include/voxel/`, update `voxel/CMakeLists.txt`
 - New tests: add `.cpp` files under `test/`, update `test/CMakeLists.txt`
-- New shaders: add `.vert`/`.frag` under `voxel/shaders/`, add to `SHADERS` list in `voxel/CMakeLists.txt`
+- New application shaders: add `.vert`/`.frag` under `voxel/shaders/`, add to `SHADERS` list in `voxel/CMakeLists.txt`
+- New engine shaders: add `.vert`/`.frag` under `steel/shaders/`, update `steel/CMakeLists.txt` to compile and embed them
 - New dependencies: add to `vcpkg.json`, `find_package()` in top-level CMakeLists.txt, link in the appropriate subdirectory

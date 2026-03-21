@@ -45,7 +45,7 @@ Material Material::create(steel::Engine& engine,
         .set_topology(vk::PrimitiveTopology::eTriangleList)
         .set_cull_mode(vk::CullModeFlagBits::eBack)
         .set_depth_test(true, vk::CompareOp::eLess)
-        .build(engine.render_pass(), layout, engine.extent());
+        .build(engine.render_pass(), layout);
 
     spdlog::info("Material created: pipeline and layout built");
 

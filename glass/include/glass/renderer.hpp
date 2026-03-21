@@ -10,8 +10,8 @@ class Renderer {
 public:
     explicit Renderer(steel::Engine& engine);
 
-    void run(const SceneNode& root, const Camera& camera);
-    void render_frame(const SceneNode& root, const Camera& camera);
+    void run(const SceneNode& root, Camera& camera);
+    void render_frame(const SceneNode& root, Camera& camera);
 
 private:
     void traverse(const vk::raii::CommandBuffer& cmd,

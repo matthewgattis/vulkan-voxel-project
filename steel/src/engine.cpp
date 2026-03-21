@@ -1,4 +1,5 @@
 #include <steel/engine.hpp>
+#include "steel/fxaa_shaders.hpp"
 
 #include <spdlog/spdlog.h>
 
@@ -62,10 +63,15 @@ Engine::Engine(std::string_view title, uint32_t width, uint32_t height) {
     create_device();
     create_swapchain();
     create_depth_resources();
+    create_offscreen_target();
     create_render_pass();
-    create_framebuffers();
+    create_offscreen_framebuffer();
+    create_fxaa_render_pass();
+    create_fxaa_framebuffers();
     create_command_pool();
     create_sync_objects();
+    create_fxaa_descriptors();
+    create_fxaa_pipeline();
 
     spdlog::info("steel::Engine initialized successfully");
 }
@@ -120,6 +126,7 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
         result = r;
         image_index = i;
     } catch (const vk::OutOfDateKHRError&) {
+        framebuffer_resized_ = false;
         recreate_swapchain();
         return nullptr;
     }
@@ -138,7 +145,7 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
     cmd.reset();
     cmd.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
-    // Begin render pass
+    // Begin scene render pass (renders to offscreen target)
     std::array<vk::ClearValue, 2> clear_values = {
         vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}},
         vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}},
@@ -146,7 +153,7 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
 
     vk::RenderPassBeginInfo render_pass_info{
         *render_pass_,
-        *framebuffers_[current_image_index_],
+        *offscreen_framebuffer_,
         vk::Rect2D{{0, 0}, swapchain_extent_},
         clear_values,
     };
@@ -169,13 +176,41 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
 
 void Engine::end_frame() {
     auto& cmd = command_buffers_[current_frame_];
+
+    // End scene render pass
     cmd.endRenderPass();
+
+    // Begin FXAA render pass (reads offscreen, writes to swapchain)
+    vk::RenderPassBeginInfo fxaa_rp_info{
+        *fxaa_render_pass_,
+        *fxaa_framebuffers_[current_image_index_],
+        vk::Rect2D{{0, 0}, swapchain_extent_},
+    };
+
+    cmd.beginRenderPass(fxaa_rp_info, vk::SubpassContents::eInline);
+
+    vk::Viewport viewport{
+        0.0f, 0.0f,
+        static_cast<float>(swapchain_extent_.width),
+        static_cast<float>(swapchain_extent_.height),
+        0.0f, 1.0f};
+    cmd.setViewport(0, viewport);
+
+    vk::Rect2D scissor{{0, 0}, swapchain_extent_};
+    cmd.setScissor(0, scissor);
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *fxaa_pipeline_);
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *fxaa_pipeline_layout_, 0, *fxaa_descriptor_set_, {});
+    cmd.draw(3, 1, 0, 0);
+
+    cmd.endRenderPass();
+
     cmd.end();
 
     // Submit
     vk::Semaphore          wait_semaphores[]   = {*image_available_[current_frame_]};
     vk::PipelineStageFlags wait_stages[]       = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
-    vk::Semaphore          signal_semaphores[] = {*render_finished_[current_frame_]};
+    vk::Semaphore          signal_semaphores[] = {*render_finished_[current_image_index_]};
 
     vk::SubmitInfo submit_info{
         wait_semaphores,
@@ -208,7 +243,7 @@ void Engine::end_frame() {
         recreate_swapchain();
     }
 
-    current_frame_ = (current_frame_ + 1) % static_cast<uint32_t>(swapchain_images_.size());
+    current_frame_ = (current_frame_ + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +587,50 @@ void Engine::create_depth_resources() {
 }
 
 // ---------------------------------------------------------------------------
-// Render pass
+// Offscreen render target
+// ---------------------------------------------------------------------------
+
+void Engine::create_offscreen_target() {
+    vk::ImageCreateInfo image_info{
+        {},
+        vk::ImageType::e2D,
+        surface_format_.format,
+        {swapchain_extent_.width, swapchain_extent_.height, 1},
+        1, 1,
+        vk::SampleCountFlagBits::e1,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+        vk::SharingMode::eExclusive,
+        {},
+        vk::ImageLayout::eUndefined,
+    };
+
+    offscreen_image_ = vk::raii::Image{device_, image_info};
+
+    auto mem_requirements = offscreen_image_.getMemoryRequirements();
+    vk::MemoryAllocateInfo alloc_info{
+        mem_requirements.size,
+        find_memory_type(mem_requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
+    };
+
+    offscreen_memory_ = vk::raii::DeviceMemory{device_, alloc_info};
+    offscreen_image_.bindMemory(*offscreen_memory_, 0);
+
+    vk::ImageViewCreateInfo view_info{
+        {},
+        *offscreen_image_,
+        vk::ImageViewType::e2D,
+        surface_format_.format,
+        {},
+        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+    };
+
+    offscreen_image_view_ = vk::raii::ImageView{device_, view_info};
+    spdlog::info("Offscreen render target created ({}x{})", swapchain_extent_.width, swapchain_extent_.height);
+}
+
+// ---------------------------------------------------------------------------
+// Render pass (scene — now outputs to shader-read-only for FXAA)
 // ---------------------------------------------------------------------------
 
 void Engine::create_render_pass() {
@@ -565,7 +643,7 @@ void Engine::create_render_pass() {
         vk::AttachmentLoadOp::eDontCare,
         vk::AttachmentStoreOp::eDontCare,
         vk::ImageLayout::eUndefined,
-        vk::ImageLayout::ePresentSrcKHR,
+        vk::ImageLayout::eShaderReadOnlyOptimal,
     };
 
     vk::AttachmentDescription depth_attachment{
@@ -613,25 +691,291 @@ void Engine::create_render_pass() {
 }
 
 // ---------------------------------------------------------------------------
-// Framebuffers
+// Offscreen framebuffer (scene pass)
 // ---------------------------------------------------------------------------
 
-void Engine::create_framebuffers() {
-    framebuffers_.clear();
+void Engine::create_offscreen_framebuffer() {
+    std::array<vk::ImageView, 2> attachments = {*offscreen_image_view_, *depth_image_view_};
+
+    vk::FramebufferCreateInfo create_info{
+        {},
+        *render_pass_,
+        attachments,
+        swapchain_extent_.width,
+        swapchain_extent_.height,
+        1,
+    };
+
+    offscreen_framebuffer_ = vk::raii::Framebuffer{device_, create_info};
+}
+
+// ---------------------------------------------------------------------------
+// FXAA render pass
+// ---------------------------------------------------------------------------
+
+void Engine::create_fxaa_render_pass() {
+    vk::AttachmentDescription color_attachment{
+        {},
+        surface_format_.format,
+        vk::SampleCountFlagBits::e1,
+        vk::AttachmentLoadOp::eDontCare,
+        vk::AttachmentStoreOp::eStore,
+        vk::AttachmentLoadOp::eDontCare,
+        vk::AttachmentStoreOp::eDontCare,
+        vk::ImageLayout::eUndefined,
+        vk::ImageLayout::ePresentSrcKHR,
+    };
+
+    vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+
+    vk::SubpassDescription subpass{
+        {},
+        vk::PipelineBindPoint::eGraphics,
+        {},
+        color_ref,
+    };
+
+    vk::SubpassDependency dependency{
+        VK_SUBPASS_EXTERNAL, 0,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        {},
+        vk::AccessFlagBits::eColorAttachmentWrite,
+    };
+
+    vk::RenderPassCreateInfo create_info{
+        {},
+        1, &color_attachment,
+        1, &subpass,
+        1, &dependency,
+    };
+
+    fxaa_render_pass_ = vk::raii::RenderPass{device_, create_info};
+    spdlog::info("FXAA render pass created");
+}
+
+// ---------------------------------------------------------------------------
+// FXAA framebuffers (per swapchain image)
+// ---------------------------------------------------------------------------
+
+void Engine::create_fxaa_framebuffers() {
+    fxaa_framebuffers_.clear();
     for (const auto& image_view : swapchain_image_views_) {
-        std::array<vk::ImageView, 2> attachments = {*image_view, *depth_image_view_};
+        vk::ImageView attachment = *image_view;
 
         vk::FramebufferCreateInfo create_info{
             {},
-            *render_pass_,
-            attachments,
+            *fxaa_render_pass_,
+            1, &attachment,
             swapchain_extent_.width,
             swapchain_extent_.height,
             1,
         };
 
-        framebuffers_.emplace_back(device_, create_info);
+        fxaa_framebuffers_.emplace_back(device_, create_info);
     }
+}
+
+// ---------------------------------------------------------------------------
+// FXAA descriptors
+// ---------------------------------------------------------------------------
+
+void Engine::create_fxaa_descriptors() {
+    // Sampler
+    vk::SamplerCreateInfo sampler_info{
+        {},
+        vk::Filter::eLinear,
+        vk::Filter::eLinear,
+        vk::SamplerMipmapMode::eLinear,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+    };
+    fxaa_sampler_ = vk::raii::Sampler{device_, sampler_info};
+
+    // Descriptor set layout
+    vk::DescriptorSetLayoutBinding binding{
+        0,
+        vk::DescriptorType::eCombinedImageSampler,
+        1,
+        vk::ShaderStageFlagBits::eFragment,
+    };
+
+    vk::DescriptorSetLayoutCreateInfo layout_info{
+        {},
+        1, &binding,
+    };
+    fxaa_descriptor_set_layout_ = vk::raii::DescriptorSetLayout{device_, layout_info};
+
+    // Pipeline layout
+    vk::PipelineLayoutCreateInfo pl_layout_info{
+        {},
+        1, &*fxaa_descriptor_set_layout_,
+    };
+    fxaa_pipeline_layout_ = vk::raii::PipelineLayout{device_, pl_layout_info};
+
+    // Descriptor pool
+    vk::DescriptorPoolSize pool_size{
+        vk::DescriptorType::eCombinedImageSampler,
+        1,
+    };
+
+    vk::DescriptorPoolCreateInfo pool_info{
+        vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+        1,
+        1, &pool_size,
+    };
+    fxaa_descriptor_pool_ = vk::raii::DescriptorPool{device_, pool_info};
+
+    // Allocate descriptor set
+    vk::DescriptorSetAllocateInfo alloc_info{
+        *fxaa_descriptor_pool_,
+        1, &*fxaa_descriptor_set_layout_,
+    };
+    auto sets = device_.allocateDescriptorSets(alloc_info);
+    fxaa_descriptor_set_ = std::move(sets[0]);
+
+    // Write initial descriptor
+    update_fxaa_descriptor();
+
+    spdlog::info("FXAA descriptors created");
+}
+
+void Engine::update_fxaa_descriptor() {
+    vk::DescriptorImageInfo image_info{
+        *fxaa_sampler_,
+        *offscreen_image_view_,
+        vk::ImageLayout::eShaderReadOnlyOptimal,
+    };
+
+    vk::WriteDescriptorSet write{
+        *fxaa_descriptor_set_,
+        0,
+        0,
+        1,
+        vk::DescriptorType::eCombinedImageSampler,
+        &image_info,
+    };
+
+    device_.updateDescriptorSets(write, {});
+}
+
+// ---------------------------------------------------------------------------
+// FXAA pipeline
+// ---------------------------------------------------------------------------
+
+void Engine::create_fxaa_pipeline() {
+    // Create shader modules from embedded SPIR-V
+    vk::ShaderModuleCreateInfo vert_info{
+        {},
+        shaders::fullscreen_vert.size() * sizeof(uint32_t),
+        shaders::fullscreen_vert.data(),
+    };
+    vk::raii::ShaderModule vert_module{device_, vert_info};
+
+    vk::ShaderModuleCreateInfo frag_info{
+        {},
+        shaders::fxaa_frag.size() * sizeof(uint32_t),
+        shaders::fxaa_frag.data(),
+    };
+    vk::raii::ShaderModule frag_module{device_, frag_info};
+
+    std::array<vk::PipelineShaderStageCreateInfo, 2> shader_stages = {{
+        {{}, vk::ShaderStageFlagBits::eVertex,   *vert_module, "main"},
+        {{}, vk::ShaderStageFlagBits::eFragment, *frag_module, "main"},
+    }};
+
+    // Empty vertex input (fullscreen triangle generated in vertex shader)
+    vk::PipelineVertexInputStateCreateInfo vertex_input{};
+
+    vk::PipelineInputAssemblyStateCreateInfo input_assembly{
+        {},
+        vk::PrimitiveTopology::eTriangleList,
+        VK_FALSE,
+    };
+
+    // Dynamic viewport and scissor
+    std::array<vk::DynamicState, 2> dynamic_states = {
+        vk::DynamicState::eViewport,
+        vk::DynamicState::eScissor,
+    };
+    vk::PipelineDynamicStateCreateInfo dynamic_state{
+        {},
+        dynamic_states,
+    };
+
+    vk::PipelineViewportStateCreateInfo viewport_state{
+        {},
+        1, nullptr,
+        1, nullptr,
+    };
+
+    vk::PipelineRasterizationStateCreateInfo rasterizer{
+        {},
+        VK_FALSE,
+        VK_FALSE,
+        vk::PolygonMode::eFill,
+        vk::CullModeFlagBits::eNone,
+        vk::FrontFace::eClockwise,
+        VK_FALSE,
+        0.0f, 0.0f, 0.0f,
+        1.0f,
+    };
+
+    vk::PipelineMultisampleStateCreateInfo multisampling{
+        {},
+        vk::SampleCountFlagBits::e1,
+        VK_FALSE,
+    };
+
+    vk::PipelineDepthStencilStateCreateInfo depth_stencil{
+        {},
+        VK_FALSE,
+        VK_FALSE,
+        vk::CompareOp::eLessOrEqual,
+        VK_FALSE,
+        VK_FALSE,
+    };
+
+    vk::PipelineColorBlendAttachmentState color_blend_attachment{
+        VK_FALSE,
+        vk::BlendFactor::eOne,
+        vk::BlendFactor::eZero,
+        vk::BlendOp::eAdd,
+        vk::BlendFactor::eOne,
+        vk::BlendFactor::eZero,
+        vk::BlendOp::eAdd,
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+        vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+    };
+
+    vk::PipelineColorBlendStateCreateInfo color_blending{
+        {},
+        VK_FALSE,
+        vk::LogicOp::eCopy,
+        1, &color_blend_attachment,
+        {{0.0f, 0.0f, 0.0f, 0.0f}},
+    };
+
+    vk::GraphicsPipelineCreateInfo pipeline_info{
+        {},
+        shader_stages,
+        &vertex_input,
+        &input_assembly,
+        nullptr,
+        &viewport_state,
+        &rasterizer,
+        &multisampling,
+        &depth_stencil,
+        &color_blending,
+        &dynamic_state,
+        *fxaa_pipeline_layout_,
+        *fxaa_render_pass_,
+        0,
+    };
+
+    fxaa_pipeline_ = vk::raii::Pipeline{device_, nullptr, pipeline_info};
+    spdlog::info("FXAA pipeline created");
 }
 
 // ---------------------------------------------------------------------------
@@ -648,7 +992,7 @@ void Engine::create_command_pool() {
     vk::CommandBufferAllocateInfo alloc_info{
         *command_pool_,
         vk::CommandBufferLevel::ePrimary,
-        static_cast<uint32_t>(swapchain_images_.size()),
+        MAX_FRAMES_IN_FLIGHT,
     };
     command_buffers_ = device_.allocateCommandBuffers(alloc_info);
 }
@@ -658,17 +1002,24 @@ void Engine::create_command_pool() {
 // ---------------------------------------------------------------------------
 
 void Engine::create_sync_objects() {
-    auto count = static_cast<uint32_t>(swapchain_images_.size());
-    image_available_.reserve(count);
-    render_finished_.reserve(count);
-    in_flight_fences_.reserve(count);
+    auto image_count = static_cast<uint32_t>(swapchain_images_.size());
 
-    for (uint32_t i = 0; i < count; ++i) {
+    image_available_.reserve(MAX_FRAMES_IN_FLIGHT);
+    in_flight_fences_.reserve(MAX_FRAMES_IN_FLIGHT);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         image_available_.emplace_back(device_, vk::SemaphoreCreateInfo{});
-        render_finished_.emplace_back(device_, vk::SemaphoreCreateInfo{});
         in_flight_fences_.emplace_back(device_, vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
     }
-    spdlog::info("Created {} sync object sets for {} swapchain images", count, count);
+
+    // render_finished semaphores are per-swapchain-image (indexed by acquired image)
+    // because the presentation engine may hold them until the image is re-acquired
+    render_finished_.reserve(image_count);
+    for (uint32_t i = 0; i < image_count; ++i) {
+        render_finished_.emplace_back(device_, vk::SemaphoreCreateInfo{});
+    }
+
+    spdlog::info("Created {} frames-in-flight sync sets, {} present semaphores",
+                 MAX_FRAMES_IN_FLIGHT, image_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -686,36 +1037,24 @@ void Engine::recreate_swapchain() {
 
     device_.waitIdle();
 
-    // Check if the extent actually changed
-    auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(*surface_);
-    vk::Extent2D new_extent;
-    if (capabilities.currentExtent.width != UINT32_MAX) {
-        new_extent = capabilities.currentExtent;
-    } else {
-        new_extent = vk::Extent2D{static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
-        new_extent.width  = std::clamp(new_extent.width,
-            capabilities.minImageExtent.width,  capabilities.maxImageExtent.width);
-        new_extent.height = std::clamp(new_extent.height,
-            capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-    }
-
-    if (new_extent.width == swapchain_extent_.width &&
-        new_extent.height == swapchain_extent_.height) {
-        spdlog::debug("Swapchain recreation skipped (extent unchanged: {}x{})",
-                      new_extent.width, new_extent.height);
-        return;
-    }
-
-    // Destroy in reverse creation order
-    framebuffers_.clear();
+    // Destroy extent-dependent resources in reverse creation order
+    fxaa_framebuffers_.clear();
+    offscreen_framebuffer_ = vk::raii::Framebuffer{nullptr};
     depth_image_view_ = vk::raii::ImageView{nullptr};
     depth_memory_ = vk::raii::DeviceMemory{nullptr};
     depth_image_ = vk::raii::Image{nullptr};
+    offscreen_image_view_ = vk::raii::ImageView{nullptr};
+    offscreen_memory_ = vk::raii::DeviceMemory{nullptr};
+    offscreen_image_ = vk::raii::Image{nullptr};
     swapchain_image_views_.clear();
 
     create_swapchain();
     create_depth_resources();
-    create_framebuffers();
+    create_offscreen_target();
+    create_offscreen_framebuffer();
+    create_fxaa_framebuffers();
+    update_fxaa_descriptor();
+    current_frame_ = 0;
 
     spdlog::info("Swapchain recreated ({}x{})", swapchain_extent_.width, swapchain_extent_.height);
 }
