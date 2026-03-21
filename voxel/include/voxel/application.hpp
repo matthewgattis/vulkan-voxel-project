@@ -5,9 +5,9 @@
 #include <glass/shader.hpp>
 #include <glass/geometry.hpp>
 #include <glass/material.hpp>
-#include <glass/renderable.hpp>
 #include <glass/renderer.hpp>
-#include <glass/scene_node.hpp>
+#include <glass/world.hpp>
+#include <glass/components.hpp>
 #include <glass/mesh.hpp>
 #include <glass/vertex.hpp>
 
@@ -88,10 +88,11 @@ public:
 
 private:
     steel::Engine engine_;
-    glass::Renderable renderable_;
+    glass::Geometry geometry_;
+    glass::Material material_;
     glass::Camera camera_;
     glass::Renderer renderer_;
-    glass::SceneNode scene_;
+    glass::World world_;
 };
 
 } // namespace voxel

@@ -8,14 +8,13 @@ namespace voxel {
 
 Application::Application()
     : engine_{"Voxel", 1280, 960}
-    , renderable_{
-          glass::Geometry::create(engine_, CubeMesh{}),
-          glass::Material::create(
-              engine_,
-              glass::Shader::load(vk::ShaderStageFlagBits::eVertex,
-                                  std::filesystem::path{SHADER_DIR} / "triangle.vert.spv"),
-              glass::Shader::load(vk::ShaderStageFlagBits::eFragment,
-                                  std::filesystem::path{SHADER_DIR} / "triangle.frag.spv"))}
+    , geometry_{glass::Geometry::create(engine_, CubeMesh{})}
+    , material_{glass::Material::create(
+          engine_,
+          glass::Shader::load(vk::ShaderStageFlagBits::eVertex,
+                              std::filesystem::path{SHADER_DIR} / "triangle.vert.spv"),
+          glass::Shader::load(vk::ShaderStageFlagBits::eFragment,
+                              std::filesystem::path{SHADER_DIR} / "triangle.frag.spv"))}
     , camera_{60.0f,
               static_cast<float>(engine_.extent().width) / static_cast<float>(engine_.extent().height),
               0.1f, 100.0f}
@@ -24,7 +23,11 @@ Application::Application()
     camera_.set_position({2.0f, 2.0f, 2.0f});
     camera_.look_at({0.0f, 0.0f, 0.0f});
 
-    scene_.renderable = &renderable_;
+    auto cube = world_.create();
+    world_.add<glass::Transform>(cube, glass::Transform{glm::mat4{1.0f}});
+    world_.add<glass::MeshComponent>(cube, glass::MeshComponent{&geometry_});
+    world_.add<glass::MaterialComponent>(cube, glass::MaterialComponent{&material_});
+
     spdlog::info("Application initialized");
 }
 
@@ -33,7 +36,7 @@ Application::~Application() {
 }
 
 void Application::run() {
-    renderer_.run(scene_, camera_);
+    renderer_.run(camera_, world_);
 }
 
 } // namespace voxel

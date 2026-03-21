@@ -18,7 +18,7 @@ Requires: CMake 3.25+, C++23 compiler, Vulkan SDK with `glslc`, spdlog (via vcpk
 
 - **Top-level CMakeLists.txt**: Only finds packages and adds subdirectories. Do not add targets here.
 - **steel/**: Vulkan RAII engine library. Namespace `steel`. Links against Vulkan, GLM, SDL3.
-- **glass/**: Engine abstraction layer. Namespace `glass`. Links against `steel`. Provides meshes, materials, scene graph, and rendering abstractions built on top of steel's Vulkan wrappers.
+- **glass/**: Engine abstraction layer. Namespace `glass`. Links against `steel`. Provides meshes, materials, ECS (Entity Component System), and rendering abstractions built on top of steel's Vulkan wrappers.
 - **voxel/**: Application executable. Namespace `voxel`. Links against `steel` and `glass`.
 - **test/**: Google Test suite. Links against `steel`, `glass`, and GTest.
 
@@ -97,6 +97,34 @@ Each subdirectory has its own `CMakeLists.txt`.
 - `geometry()`, `material()` — const accessors
 - Move-only
 
+### glass::Entity
+- Lightweight handle: `uint32_t index` + `uint32_t generation`
+- `null_entity` sentinel constant
+- Default `operator==`, `std::hash` specialization
+
+### glass::ComponentPool\<T\>
+- Sparse-set storage for a single component type
+- `add(entity, component)`, `remove(entity)`, `get(entity)`, `has(entity)`
+- Generation-checked `has()` prevents stale entity access
+- Swap-and-pop removal for O(1) delete
+- `entities()` and `components()` for direct iteration
+
+### glass::World
+- Entity manager with create/destroy (free list + generation bumping)
+- `add<T>()`, `remove<T>()`, `get<T>()`, `has<T>()` — component operations
+- `view<Ts...>()` — returns a `View` for iterating entities with all requested components
+- `alive(entity)` — generation-checked liveness test
+
+### glass::View\<Ts...\>
+- Multi-component query: iterates the smallest pool, filters by all requested types
+- `each(fn)` — calls `fn(entity, T&...)` for each matching entity
+- Copies entity list before iteration (safe to modify components during iteration)
+
+### glass::Components
+- `Transform` — `glm::mat4 matrix` (default identity)
+- `MeshComponent` — `const Geometry*` (non-owning)
+- `MaterialComponent` — `const Material*` (non-owning)
+
 ### glass::Camera
 - `Camera(fov_degrees, aspect_ratio, near_plane, far_plane)` — perspective camera
 - `set_position(vec3)`, `look_at(vec3)`, `set_aspect_ratio(float)` — mutators
@@ -104,15 +132,17 @@ Each subdirectory has its own `CMakeLists.txt`.
 - Flips projection Y for Vulkan coordinate system (`projection_[1][1] *= -1`)
 
 ### glass::Renderer
-- Traverses scene graph and renders each frame
-- `run(root, camera)` — main loop: polls events, renders frames, waits idle on exit. Takes `Camera&` (non-const) since it updates the aspect ratio each frame.
-- `render_frame(root, camera)` — renders a single frame. Takes `Camera&` (non-const).
+- Renders each frame via scene graph traversal or ECS query
+- Scene graph: `run(root, camera)`, `render_frame(root, camera)`
+- ECS: `run(camera, world)`, `render_frame(camera, world)` — queries `View<Transform, MeshComponent, MaterialComponent>`
+- Takes `Camera&` (non-const) since it updates the aspect ratio each frame
 - Updates camera aspect ratio each frame from the engine's current extent, so resize works correctly
-- Pushes MVP (`view_projection * node.transform`) via push constants per draw call
+- Pushes MVP (`view_projection * transform.matrix`) via push constants per draw call
 
 ### glass::SceneNode
 - Simple scene graph node: `transform` (mat4), `renderable` (`const Renderable*`), `children`
 - Default-constructed with identity transform, null renderable, empty children
+- Legacy: Application now uses ECS (World) instead
 
 ## Adding New Code
 
