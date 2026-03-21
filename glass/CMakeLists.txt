@@ -8,6 +8,7 @@ target_sources(glass PRIVATE
     src/material.cpp
     src/renderable.cpp
     src/renderer.cpp
+    src/world.cpp
 )
 
 target_include_directories(glass PUBLIC
