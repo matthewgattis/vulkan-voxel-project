@@ -73,6 +73,8 @@ Engine::Engine(std::string_view title, uint32_t width, uint32_t height) {
     create_fxaa_descriptors();
     create_fxaa_pipeline();
 
+    last_frame_time_ = SDL_GetTicks();
+
     spdlog::info("steel::Engine initialized successfully");
 }
 
@@ -96,6 +98,20 @@ void Engine::wait_idle() {
 // ---------------------------------------------------------------------------
 
 bool Engine::poll_events() {
+    // Reset per-frame input accumulators
+    mouse_dx_ = 0.0f;
+    mouse_dy_ = 0.0f;
+
+    // Compute delta time
+    uint64_t now = SDL_GetTicks();
+    delta_time_ = static_cast<float>(now - last_frame_time_) / 1000.0f;
+    last_frame_time_ = now;
+
+    // Clamp delta time to avoid huge jumps (e.g. after breakpoint)
+    if (delta_time_ > 0.1f) {
+        delta_time_ = 0.1f;
+    }
+
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT) {
@@ -105,8 +121,26 @@ bool Engine::poll_events() {
             event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
             framebuffer_resized_ = true;
         }
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
+            mouse_captured_ = true;
+            mouse_capture_first_frame_ = true;
+            SDL_SetWindowRelativeMouseMode(window_, true);
+        }
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
+            mouse_captured_ = false;
+            SDL_SetWindowRelativeMouseMode(window_, false);
+        }
+        if (event.type == SDL_EVENT_MOUSE_MOTION && mouse_captured_ && !mouse_capture_first_frame_) {
+            mouse_dx_ += event.motion.xrel;
+            mouse_dy_ += event.motion.yrel;
+        }
     }
+    mouse_capture_first_frame_ = false;
     return true;
+}
+
+const bool* Engine::keyboard_state() const {
+    return SDL_GetKeyboardState(nullptr);
 }
 
 // ---------------------------------------------------------------------------

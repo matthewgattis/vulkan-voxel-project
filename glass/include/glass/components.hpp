@@ -1,5 +1,6 @@
 #pragma once
 
+#include <glass/camera.hpp>
 #include <glass/geometry.hpp>
 #include <glass/material.hpp>
 
@@ -17,6 +18,14 @@ struct MeshComponent {
 
 struct MaterialComponent {
     const Material* material{nullptr};
+};
+
+struct Velocity {
+    glm::vec3 linear{0.0f};
+};
+
+struct CameraComponent {
+    Camera camera;
 };
 
 } // namespace glass

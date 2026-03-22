@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions) -> `voxel` (application). The application currently renders a colored cube (`CubeMesh`) with a perspective camera. Always-on FXAA anti-aliasing is applied as a post-processing pass inside `steel::Engine`.
+Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions with ECS) -> `voxel` (application). The application renders procedurally generated voxel terrain using simplex noise, with per-vertex ambient occlusion, half-Lambert lighting, and a spectator camera with velocity-based physics. Always-on FXAA 3.11 anti-aliasing is applied as a post-processing pass inside `steel::Engine`.
 
 ## Build
 
@@ -19,7 +19,7 @@ Requires: CMake 3.25+, C++23 compiler, Vulkan SDK with `glslc`, spdlog (via vcpk
 - **Top-level CMakeLists.txt**: Only finds packages and adds subdirectories. Do not add targets here.
 - **steel/**: Vulkan RAII engine library. Namespace `steel`. Links against Vulkan, GLM, SDL3.
 - **glass/**: Engine abstraction layer. Namespace `glass`. Links against `steel`. Provides meshes, materials, ECS (Entity Component System), and rendering abstractions built on top of steel's Vulkan wrappers.
-- **voxel/**: Application executable. Namespace `voxel`. Links against `steel` and `glass`.
+- **voxel/**: Application executable. Namespace `voxel`. Links against `glass`.
 - **test/**: Google Test suite. Links against `steel`, `glass`, and GTest.
 
 Each subdirectory has its own `CMakeLists.txt`.
@@ -30,9 +30,11 @@ Each subdirectory has its own `CMakeLists.txt`.
 - **Namespaces**: `steel` for Vulkan RAII wrappers, `glass` for engine abstractions, `voxel` for application code
 - **Vulkan**: Use `vk::raii::` types exclusively (RAII wrappers, no manual cleanup)
 - **Headers**: `<module>/include/<module>/` layout (e.g., `steel/include/steel/engine.hpp`)
-- **Shaders**: GLSL 450 in `voxel/shaders/` and `steel/shaders/`, compiled to SPIR-V by `glslc` at build time. Application shaders use push constants (`mat4 mvp`) for per-object transforms. Steel's internal FXAA shaders (`fullscreen.vert`, `fxaa.frag`) are compiled to SPIR-V and embedded as `constexpr` arrays in a generated header (not checked into git).
+- **Shaders**: GLSL 450 in `voxel/shaders/` and `steel/shaders/`, compiled to SPIR-V by `glslc` at build time. Application shaders use a per-frame UBO (set 0, binding 0) for `view_projection` and push constants (`mat4 model`) for per-object transforms. Steel's internal FXAA shaders (`fullscreen.vert`, `fxaa.frag`) are compiled to SPIR-V and embedded as `constexpr` arrays in a generated header (not checked into git).
 - **Front face**: Default front face is clockwise (`vk::FrontFace::eClockwise`)
-- **Push constants**: Used for per-object MVP transforms (view_projection * node.transform), pushed per draw call
+- **Coordinate system**: Z is up, terrain extends across the XY plane
+- **Push constants**: Used for per-object model transforms, pushed per draw call
+- **Descriptor sets**: Set 0 = per-frame UBO (view_projection), set 1 = reserved for per-material (future)
 - **Tests**: No GPU required. Test struct layouts, type traits, Vulkan struct construction, and utilities.
 - **Vulkan HPP structs**: Use member assignment or constructor syntax, not C++20 designated initializers (they do not work reliably with Vulkan HPP types)
 
@@ -41,108 +43,90 @@ Each subdirectory has its own `CMakeLists.txt`.
 ### steel::Engine
 - `Engine(title, width, height)` — creates window and initializes Vulkan. Auto-selects largest fitting 4:3 resolution from predefined list for the primary display.
 - High-DPI support via `SDL_WINDOW_HIGH_PIXEL_DENSITY`
-- `begin_frame()` → `const vk::raii::CommandBuffer*` (nullptr if frame unavailable). Sets dynamic viewport and scissor from the current extent.
+- `begin_frame()` -> `const vk::raii::CommandBuffer*` (nullptr if frame unavailable). Sets dynamic viewport and scissor from the current extent.
 - `end_frame()` — submits and presents
-- FXAA post-processing: the scene renders to an offscreen target, then an FXAA fullscreen pass reads it via a combined image sampler descriptor and writes to the swapchain. The FXAA pipeline is built directly, separate from `PipelineBuilder`. The `begin_frame()`/`end_frame()` API is unchanged — glass and voxel are unaware of FXAA.
+- FXAA 3.11 post-processing: the scene renders to an offscreen target, then an FXAA fullscreen pass (quality preset 12 with edge endpoint search) reads it via a combined image sampler descriptor and writes to the swapchain. The FXAA pipeline is built directly, separate from `PipelineBuilder`. The `begin_frame()`/`end_frame()` API is unchanged — glass and voxel are unaware of FXAA.
 - `wait_idle()` — waits for device idle (used for clean shutdown)
-- `poll_events()` → `bool` (false = quit requested)
-- `pick_physical_device()` validates GPU suitability: graphics+present queues, swapchain extension, surface formats, depth format support. Prefers discrete GPU.
-- Depth format is selected at runtime via `find_depth_format()` (tries D32Sfloat, D32SfloatS8Uint, D24UnormS8Uint)
-- Window resize support: `recreate_swapchain()` handles `VK_ERROR_OUT_OF_DATE_KHR` and `VK_SUBOPTIMAL_KHR`
-- Frames in flight: `MAX_FRAMES_IN_FLIGHT` (2, defined in engine.hpp). Command buffers, fences, and acquire semaphores are sized to `MAX_FRAMES_IN_FLIGHT`. Present (render-finished) semaphores are per-swapchain-image since the presentation engine may hold them until the image is re-acquired.
+- `poll_events()` -> `bool` (false = quit requested). Handles input: mouse capture on left-click drag (with first-frame motion discard), delta time computation, keyboard state.
+- `keyboard_state()` -> `const bool*` — SDL keyboard state array
+- `mouse_dx()`, `mouse_dy()` — mouse deltas (only while left button held)
+- `delta_time()` — frame delta in seconds, clamped to 0.1s max
+- `current_frame()` — current frame-in-flight index
+- Frames in flight: `MAX_FRAMES_IN_FLIGHT` (2, defined in engine.hpp)
 - Accessors: `device()`, `physical_device()`, `render_pass()`, `extent()`, `command_pool()`, `graphics_queue()`, `graphics_family()`, `color_format()`, `depth_format()`
-- Uses spdlog for diagnostic logging
+
+### steel::UniformBuffer\<T\>
+- Header-only template encapsulating descriptor set layout, pool, per-frame-in-flight sets, buffers, and persistent mapping
+- `create(engine, stages)` — creates layout, pool, sets, buffers with persistent mapping
+- `update(frame_index, data)` — memcpy to mapped buffer
+- `bind(cmd, layout, set_index, frame_index)` — binds descriptor set
+- `layout()` -> `const vk::raii::DescriptorSetLayout&`
 
 ### steel::PipelineBuilder
 - Constructor: `PipelineBuilder(device, vert_spirv, frag_spirv)` — takes SPIR-V bytecode upfront
 - Fluent API for remaining state: `set_vertex_input(bindings, attrs)`, `set_topology()`, `set_polygon_mode()`, `set_cull_mode()`, `set_depth_test()`
 - Default front face is `eClockwise` (matching Vulkan convention with Y-flipped projection)
-- `build(render_pass, layout)` → `vk::raii::Pipeline` — viewport and scissor are dynamic state (set at draw time via `begin_frame()`), so pipelines do not need to be recreated on window resize
+- `build(render_pass, layout)` -> `vk::raii::Pipeline` — viewport and scissor are dynamic state
 
 ### steel::Buffer
-- `Buffer::create_vertex_buffer(device, physical_device, command_pool, queue, data)` — staging upload to device-local vertex buffer
-- `Buffer::create_index_buffer(device, physical_device, command_pool, queue, data)` — staging upload to device-local index buffer
-- `Buffer::create(device, physical_device, size, usage, memory_properties)` — general buffer creation
-- `handle()` → `vk::Buffer`, `size()` → `vk::DeviceSize`
+- `Buffer::create_vertex_buffer(...)` — staging upload to device-local vertex buffer
+- `Buffer::create_index_buffer(...)` — staging upload to device-local index buffer
+- `Buffer::create(...)` — general buffer creation
+- `map()`, `unmap()` — host-visible memory access
 
-### glass::Shader
-- `Shader::load(stage, spirv_path)` — loads SPIR-V binary from file
-- `spirv()` → `span<const uint32_t>`, `stage()` → `vk::ShaderStageFlagBits`
-- Move-only
+### glass::Camera
+- Projection-only: `Camera(fov_degrees, aspect_ratio, near_plane, far_plane)`
+- `set_aspect_ratio(float)` — updated by renderer each frame
+- `projection()` -> `const glm::mat4&` — Y-flipped for Vulkan
+- View matrix is derived from `glm::inverse(Transform.matrix)` in the renderer
 
-### glass::Vertex
-- `position` (vec3) + `normal` (vec3) + `color` (vec3) = 36 bytes, standard layout
-- `binding_description()` — vertex input binding at binding 0
-- `attribute_descriptions()` — three R32G32B32Sfloat attributes (position at 0, normal at 1, color at 2)
-
-### glass::Mesh
-- Data-only abstract interface for mesh data
-- `vertices()` → `span<const Vertex>`, `indices()` → `span<const uint32_t>`
-
-### glass::Geometry
-- Created from a `Mesh`: `Geometry::create(engine, mesh)` — uploads vertex and index data via staging buffers
-- `bind(cmd)`, `draw(cmd)` — binds vertex/index buffers and issues draw call
-- Move-only
-
-### glass::Material
-- Owns a `vk::raii::Pipeline` and `vk::raii::PipelineLayout`
-- Move-only (not copyable, since it owns Vulkan RAII handles)
-- `Material::create(engine, vertex_shader, fragment_shader)` — takes `Shader` objects (not file paths). Creates pipeline layout with a push constant range for `mat4 mvp` (vertex stage).
-- `bind(cmd)` — binds the pipeline
-- `layout()` → `const vk::raii::PipelineLayout&` — exposes pipeline layout for push constant binding
-
-### glass::Renderable
-- Bundles a `Geometry` and `Material` into a single drawable unit
-- `Renderable(geometry, material)` — move-constructs from both
-- `geometry()`, `material()` — const accessors
-- Move-only
-
-### glass::Entity
-- Lightweight handle: `uint32_t index` + `uint32_t generation`
-- `null_entity` sentinel constant
-- Default `operator==`, `std::hash` specialization
-
-### glass::ComponentPool\<T\>
-- Sparse-set storage for a single component type
-- `add(entity, component)`, `remove(entity)`, `get(entity)`, `has(entity)`
-- Generation-checked `has()` prevents stale entity access
-- Swap-and-pop removal for O(1) delete
-- `entities()` and `components()` for direct iteration
-
-### glass::World
-- Entity manager with create/destroy (free list + generation bumping)
-- `add<T>()`, `remove<T>()`, `get<T>()`, `has<T>()` — component operations
-- `view<Ts...>()` — returns a `View` for iterating entities with all requested components
-- `alive(entity)` — generation-checked liveness test
-
-### glass::View\<Ts...\>
-- Multi-component query: iterates the smallest pool, filters by all requested types
-- `each(fn)` — calls `fn(entity, T&...)` for each matching entity
-- Copies entity list before iteration (safe to modify components during iteration)
+### glass::Renderer
+- `Renderer(engine)` — creates per-frame UBO for `view_projection`
+- `set_camera(entity)` — sets the active camera entity
+- `render_frame(world)` — computes view_projection from camera entity's Transform and CameraComponent, updates UBO, renders all entities with Transform + MeshComponent + MaterialComponent
+- `frame_descriptor_layout()` — exposes UBO descriptor set layout for material pipeline creation
 
 ### glass::Components
 - `Transform` — `glm::mat4 matrix` (default identity)
 - `MeshComponent` — `const Geometry*` (non-owning)
 - `MaterialComponent` — `const Material*` (non-owning)
+- `Velocity` — `glm::vec3 linear` (default zero)
+- `CameraComponent` — `Camera camera`
 
-### glass::Camera
-- `Camera(fov_degrees, aspect_ratio, near_plane, far_plane)` — perspective camera
-- `set_position(vec3)`, `look_at(vec3)`, `set_aspect_ratio(float)` — mutators
-- `view()`, `projection()`, `view_projection()` — matrix accessors
-- Flips projection Y for Vulkan coordinate system (`projection_[1][1] *= -1`)
+### glass::Entity, World, View
+- `Entity` — lightweight handle: `uint32_t index` + `uint32_t generation`
+- `World` — entity manager with create/destroy, component operations (`add`, `remove`, `get`, `has`), `view<Ts...>()` for multi-component queries
+- `View<Ts...>` — iterates smallest pool, filters by all requested types, `each(fn)` callback
 
-### glass::Renderer
-- Renders each frame via scene graph traversal or ECS query
-- Scene graph: `run(root, camera)`, `render_frame(root, camera)`
-- ECS: `run(camera, world)`, `render_frame(camera, world)` — queries `View<Transform, MeshComponent, MaterialComponent>`
-- Takes `Camera&` (non-const) since it updates the aspect ratio each frame
-- Updates camera aspect ratio each frame from the engine's current extent, so resize works correctly
-- Pushes MVP (`view_projection * transform.matrix`) via push constants per draw call
+### glass::Material
+- `Material::create(engine, vertex_shader, fragment_shader, frame_descriptor_layout)` — pipeline layout includes descriptor set layout at set 0 and push constant range for model matrix
+- `bind(cmd)`, `layout()` — pipeline binding and layout access
 
-### glass::SceneNode
-- Simple scene graph node: `transform` (mat4), `renderable` (`const Renderable*`), `children`
-- Default-constructed with identity transform, null renderable, empty children
-- Legacy: Application now uses ECS (World) instead
+## Voxel Application
+
+### voxel::Chunk
+- Pure voxel data: 16x16x16 flat array indexed as `x + y*16 + z*256`
+- `get(x, y, z)`, `set(x, y, z, type)`, `in_bounds()`, chunk coordinates `cx()`, `cy()`, `cz()`
+
+### voxel::ChunkMesh
+- Implements `glass::Mesh`. Constructor takes a `Chunk` and a `SolidQuery` function
+- Generates vertices/indices with per-face neighbor culling, per-vertex AO, and AO-aware quad triangulation
+- `SolidQuery = std::function<bool(int wx, int wy, int wz)>` — enables cross-chunk neighbor lookups
+- Per-vertex AO: checks 3 adjacent voxels per vertex (2 sides + 1 corner). If both sides solid, AO = 0 (darkest). Brightness mapped as {0.25, 0.5, 0.75, 1.0}.
+- Quad flip: triangulation diagonal chosen based on AO values to avoid visual artifacts
+
+### voxel::Terrain
+- Generates terrain from simplex noise: `terrain_height(wx, wy)` using `glm::simplex`
+- `is_solid_at(wx, wy, wz)` — deterministic world-space solid query from noise (used for cross-chunk culling and AO)
+- Fill layers: Grass (top), Dirt (1-3 below surface), Stone (deeper)
+- Grid: 4x4 chunks in XY, automatic Z chunk count based on max height
+
+### voxel::CameraController
+- Spectator camera: WASD movement on XY plane, Space/Shift for Z, left-click-drag for mouse look
+- Velocity-based physics: acceleration + subtractive friction (proportional to speed), frame-rate independent
+- Sprint: Tab or Ctrl latches sprint on while moving, releases when all move keys released
+- Base speed 11 units/s, sprint speed 22 units/s
+- Camera convention: OpenGL look-along -Z with base rotation for Z-up world
 
 ## Adding New Code
 

@@ -1,83 +1,60 @@
 #include <glass/renderer.hpp>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace glass {
 
 Renderer::Renderer(steel::Engine& engine)
-    : engine_(engine) {}
+    : engine_(engine)
+    , frame_ubo_{steel::UniformBuffer<FrameUBO>::create(
+          engine_, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment)} {}
 
-void Renderer::run(const SceneNode& root, Camera& camera) {
+void Renderer::run(World& world) {
     while (engine_.poll_events()) {
-        render_frame(root, camera);
+        render_frame(world);
     }
     engine_.wait_idle();
 }
 
-void Renderer::render_frame(const SceneNode& root, Camera& camera) {
+void Renderer::render_frame(World& world) {
+    if (camera_ == null_entity || !world.alive(camera_)) {
+        return;
+    }
+    if (!world.has<Transform>(camera_) || !world.has<CameraComponent>(camera_)) {
+        return;
+    }
+
+    auto& t = world.get<Transform>(camera_);
+    auto& cc = world.get<CameraComponent>(camera_);
+
     auto extent = engine_.extent();
     float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-    camera.set_aspect_ratio(aspect);
+    cc.camera.set_aspect_ratio(aspect);
+
+    glm::mat4 view = glm::inverse(t.matrix);
+    glm::mat4 view_projection = cc.camera.projection() * view;
 
     auto* cmd = engine_.begin_frame();
     if (cmd) {
-        traverse(*cmd, root, camera.view_projection());
+        frame_ubo_.update(engine_.current_frame(), FrameUBO{view_projection});
+        render_ecs(*cmd, world, engine_.current_frame());
         engine_.end_frame();
-    }
-}
-
-void Renderer::run(Camera& camera, World& world) {
-    while (engine_.poll_events()) {
-        render_frame(camera, world);
-    }
-    engine_.wait_idle();
-}
-
-void Renderer::render_frame(Camera& camera, World& world) {
-    auto extent = engine_.extent();
-    float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-    camera.set_aspect_ratio(aspect);
-
-    auto* cmd = engine_.begin_frame();
-    if (cmd) {
-        render_ecs(*cmd, camera.view_projection(), world);
-        engine_.end_frame();
-    }
-}
-
-void Renderer::traverse(const vk::raii::CommandBuffer& cmd,
-                        const SceneNode& node,
-                        const glm::mat4& view_projection) const {
-    if (node.renderable) {
-        glm::mat4 mvp = view_projection * node.transform;
-
-        node.renderable->material().bind(cmd);
-        cmd.pushConstants<glm::mat4>(
-            *node.renderable->material().layout(),
-            vk::ShaderStageFlagBits::eVertex,
-            0,
-            mvp);
-        node.renderable->geometry().bind(cmd);
-        node.renderable->geometry().draw(cmd);
-    }
-
-    for (const auto& child : node.children) {
-        traverse(cmd, child, view_projection);
     }
 }
 
 void Renderer::render_ecs(const vk::raii::CommandBuffer& cmd,
-                          const glm::mat4& view_projection,
-                          World& world) const {
+                          World& world,
+                          uint32_t frame_index) const {
     world.view<Transform, MeshComponent, MaterialComponent>()
         .each([&](Entity e, Transform& t, MeshComponent& mesh, MaterialComponent& mat) {
-            glm::mat4 mvp = view_projection * t.matrix;
             mat.material->bind(cmd);
+            frame_ubo_.bind(cmd, mat.material->layout(), 0, frame_index);
             cmd.pushConstants<glm::mat4>(
                 *mat.material->layout(),
                 vk::ShaderStageFlagBits::eVertex,
                 0,
-                mvp);
+                t.matrix);
             mesh.geometry->bind(cmd);
             mesh.geometry->draw(cmd);
         });

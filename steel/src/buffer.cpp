@@ -128,6 +128,14 @@ Buffer Buffer::create(
     return buf;
 }
 
+void* Buffer::map(vk::DeviceSize offset, vk::DeviceSize size) {
+    return memory_.mapMemory(offset, size == VK_WHOLE_SIZE ? size_ : size);
+}
+
+void Buffer::unmap() {
+    memory_.unmapMemory();
+}
+
 uint32_t Buffer::find_memory_type(
     const vk::raii::PhysicalDevice& physical_device,
     uint32_t                        type_filter,
