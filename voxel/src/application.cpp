@@ -1,6 +1,7 @@
 #include <voxel/application.hpp>
 
 #include <imgui.h>
+#include <vk_mem_alloc.h>
 #include <spdlog/spdlog.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -71,6 +72,17 @@ void Application::run() {
                 ImGuiWindowFlags_NoFocusOnAppearing |
                 ImGuiWindowFlags_NoNav);
             ImGui::Text("%.1f FPS (%.2f ms)", fps_display_, fps_ms_display_);
+
+            ImGui::Separator();
+            VmaTotalStatistics stats{};
+            vmaCalculateStatistics(engine_.allocator(), &stats);
+            const auto& total = stats.total;
+            ImGui::Text("VMA: %u allocs, %u blocks",
+                        total.statistics.allocationCount,
+                        total.statistics.blockCount);
+            ImGui::Text("  Used: %.2f MB / %.2f MB",
+                        static_cast<double>(total.statistics.allocationBytes) / (1024.0 * 1024.0),
+                        static_cast<double>(total.statistics.blockBytes) / (1024.0 * 1024.0));
             ImGui::End();
         }
         engine_.imgui_end();
