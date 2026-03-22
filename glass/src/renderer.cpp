@@ -93,21 +93,6 @@ void Renderer::update_frame_ubo(uint32_t frame_index, const glm::mat4& view_proj
     std::memcpy(frame_ubo_mapped_[frame_index], &ubo, sizeof(FrameUBO));
 }
 
-void Renderer::run(const SceneNode& root, const glm::mat4& view_projection) {
-    while (engine_.poll_events()) {
-        render_frame(root, view_projection);
-    }
-    engine_.wait_idle();
-}
-
-void Renderer::render_frame(const SceneNode& root, const glm::mat4& view_projection) {
-    auto* cmd = engine_.begin_frame();
-    if (cmd) {
-        traverse(*cmd, root, view_projection);
-        engine_.end_frame();
-    }
-}
-
 void Renderer::run(World& world) {
     while (engine_.poll_events()) {
         render_frame(world);
@@ -142,27 +127,6 @@ void Renderer::render_frame(World& world) {
         update_frame_ubo(engine_.current_frame(), view_projection);
         render_ecs(*cmd, world, engine_.current_frame());
         engine_.end_frame();
-    }
-}
-
-void Renderer::traverse(const vk::raii::CommandBuffer& cmd,
-                        const SceneNode& node,
-                        const glm::mat4& view_projection) const {
-    if (node.renderable) {
-        glm::mat4 mvp = view_projection * node.transform;
-
-        node.renderable->material().bind(cmd);
-        cmd.pushConstants<glm::mat4>(
-            *node.renderable->material().layout(),
-            vk::ShaderStageFlagBits::eVertex,
-            0,
-            mvp);
-        node.renderable->geometry().bind(cmd);
-        node.renderable->geometry().draw(cmd);
-    }
-
-    for (const auto& child : node.children) {
-        traverse(cmd, child, view_projection);
     }
 }
 

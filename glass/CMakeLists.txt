@@ -6,7 +6,6 @@ target_sources(glass PRIVATE
     src/shader.cpp
     src/geometry.cpp
     src/material.cpp
-    src/renderable.cpp
     src/renderer.cpp
     src/world.cpp
 )

@@ -5,9 +5,6 @@
 #include <glass/geometry.hpp>
 #include <glass/material.hpp>
 #include <glass/shader.hpp>
-#include <glass/renderable.hpp>
-#include <glass/scene_node.hpp>
-
 #include <cstddef>
 #include <type_traits>
 
@@ -122,41 +119,6 @@ TEST(GlassVertex, AllAttributesUseSameBinding) {
 }
 
 // --------------------------------------------------------------------------
-// glass::SceneNode tests
-// --------------------------------------------------------------------------
-
-TEST(SceneNode, DefaultTransformIsIdentity) {
-    glass::SceneNode node;
-    EXPECT_EQ(node.transform, glm::mat4(1.0f));
-}
-
-TEST(SceneNode, DefaultRenderableIsNull) {
-    glass::SceneNode node;
-    EXPECT_EQ(node.renderable, nullptr);
-}
-
-TEST(SceneNode, ChildrenStartEmpty) {
-    glass::SceneNode node;
-    EXPECT_TRUE(node.children.empty());
-}
-
-TEST(SceneNode, CanAddChildren) {
-    glass::SceneNode root;
-    root.children.push_back(glass::SceneNode{});
-    root.children.push_back(glass::SceneNode{});
-    EXPECT_EQ(root.children.size(), 2u);
-}
-
-TEST(SceneNode, CanTraverseChildren) {
-    glass::SceneNode root;
-    glass::SceneNode child;
-    child.transform = glm::mat4(2.0f);
-    root.children.push_back(child);
-
-    EXPECT_EQ(root.children[0].transform, glm::mat4(2.0f));
-}
-
-// --------------------------------------------------------------------------
 // glass::Mesh interface tests
 // --------------------------------------------------------------------------
 
@@ -174,18 +136,6 @@ TEST(GlassMesh, MeshHasVirtualDestructor) {
 
 TEST(GlassShader, IsMoveConstructible) {
     EXPECT_TRUE(std::is_move_constructible_v<glass::Shader>);
-}
-
-// --------------------------------------------------------------------------
-// glass::Renderable tests
-// --------------------------------------------------------------------------
-
-TEST(GlassRenderable, IsMoveConstructible) {
-    EXPECT_TRUE(std::is_move_constructible_v<glass::Renderable>);
-}
-
-TEST(GlassRenderable, IsNotCopyConstructible) {
-    EXPECT_FALSE(std::is_copy_constructible_v<glass::Renderable>);
 }
 
 // --------------------------------------------------------------------------

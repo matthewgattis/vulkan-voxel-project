@@ -1,7 +1,6 @@
 #pragma once
 
 #include <glass/components.hpp>
-#include <glass/scene_node.hpp>
 #include <glass/world.hpp>
 #include <steel/buffer.hpp>
 #include <steel/engine.hpp>
@@ -21,19 +20,12 @@ class Renderer {
 public:
     explicit Renderer(steel::Engine& engine);
 
-    void run(const SceneNode& root, const glm::mat4& view_projection);
-    void render_frame(const SceneNode& root, const glm::mat4& view_projection);
-
     void run(World& world);
     void render_frame(World& world);
 
     const vk::raii::DescriptorSetLayout& frame_descriptor_layout() const { return frame_descriptor_layout_; }
 
 private:
-    void traverse(const vk::raii::CommandBuffer& cmd,
-                  const SceneNode& node,
-                  const glm::mat4& view_projection) const;
-
     void render_ecs(const vk::raii::CommandBuffer& cmd,
                     World& world,
                     uint32_t frame_index) const;
