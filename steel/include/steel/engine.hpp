@@ -1,5 +1,8 @@
 #pragma once
 
+#include <steel/fxaa_pass.hpp>
+#include <steel/imgui_pass.hpp>
+
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
 #include <SDL3/SDL.h>
@@ -35,10 +38,10 @@ public:
     void wait_idle();
 
     // ImGui
-    void imgui_begin();
-    void imgui_end();
-    bool imgui_enabled() const { return imgui_enabled_; }
-    void set_imgui_enabled(bool enabled) { imgui_enabled_ = enabled; }
+    void imgui_begin()  { imgui_pass_.begin(); }
+    void imgui_end()    { imgui_pass_.end(); }
+    bool imgui_enabled() const { return imgui_pass_.enabled(); }
+    void set_imgui_enabled(bool enabled) { imgui_pass_.set_enabled(enabled); }
 
     // Accessors
     const vk::raii::Device&     device()      const { return device_; }
@@ -70,17 +73,8 @@ private:
     void create_offscreen_target();
     void create_render_pass();
     void create_offscreen_framebuffer();
-    void create_fxaa_render_pass();
-    void create_fxaa_framebuffers();
     void create_command_pool();
     void create_sync_objects();
-    void create_fxaa_descriptors();
-    void create_fxaa_pipeline();
-    void update_fxaa_descriptor();
-    void create_imgui_render_pass();
-    void create_imgui_framebuffers();
-    void init_imgui();
-    void shutdown_imgui();
     void recreate_swapchain();
 
     bool is_device_suitable(const vk::raii::PhysicalDevice& dev) const;
@@ -147,24 +141,9 @@ private:
     vk::raii::RenderPass                render_pass_  {nullptr};
     vk::raii::Framebuffer               offscreen_framebuffer_ {nullptr};
 
-    // FXAA render pass & per-swapchain framebuffers
-    vk::raii::RenderPass                fxaa_render_pass_ {nullptr};
-    std::vector<vk::raii::Framebuffer>  fxaa_framebuffers_;
-
-    // FXAA pipeline resources
-    vk::raii::DescriptorSetLayout       fxaa_descriptor_set_layout_ {nullptr};
-    vk::raii::DescriptorPool            fxaa_descriptor_pool_ {nullptr};
-    vk::raii::DescriptorSet             fxaa_descriptor_set_ {nullptr};
-    vk::raii::Sampler                   fxaa_sampler_ {nullptr};
-    vk::raii::PipelineLayout            fxaa_pipeline_layout_ {nullptr};
-    vk::raii::Pipeline                  fxaa_pipeline_ {nullptr};
-
-    // ImGui render pass & per-swapchain framebuffers
-    vk::raii::RenderPass                imgui_render_pass_ {nullptr};
-    std::vector<vk::raii::Framebuffer>  imgui_framebuffers_;
-    vk::raii::DescriptorPool            imgui_descriptor_pool_ {nullptr};
-    bool                                imgui_initialized_ = false;
-    bool                                imgui_enabled_ = true;
+    // Post-process passes
+    FxaaPass  fxaa_pass_;
+    ImGuiPass imgui_pass_;
 
     // Commands
     vk::raii::CommandPool                command_pool_ {nullptr};
