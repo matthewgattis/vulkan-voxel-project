@@ -305,11 +305,25 @@ void Engine::create_instance(std::string_view title) {
     vk::InstanceCreateFlags flags{};
 #endif
 
-    // Validation layers in debug builds
+    // Validation layers in debug builds (only if available)
     std::vector<const char*> layers;
 #ifndef NDEBUG
-    layers.push_back("VK_LAYER_KHRONOS_validation");
-    spdlog::info("Vulkan validation layers enabled");
+    {
+        auto available = context_.enumerateInstanceLayerProperties();
+        bool found = false;
+        for (const auto& layer : available) {
+            if (std::string_view(layer.layerName.data()) == "VK_LAYER_KHRONOS_validation") {
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            layers.push_back("VK_LAYER_KHRONOS_validation");
+            spdlog::info("Vulkan validation layers enabled");
+        } else {
+            spdlog::warn("VK_LAYER_KHRONOS_validation not found — running without validation layers");
+        }
+    }
 #endif
 
     vk::InstanceCreateInfo create_info{

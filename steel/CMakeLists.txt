@@ -19,7 +19,10 @@ target_link_libraries(steel PUBLIC
 
 # --- Shader compilation (FXAA post-process) ---
 
-find_program(GLSLC glslc REQUIRED)
+find_program(GLSLC glslc
+    HINTS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/shaderc"
+    REQUIRED
+)
 
 set(STEEL_SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(STEEL_SHADER_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
