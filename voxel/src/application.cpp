@@ -29,7 +29,8 @@ Application::Application()
         glm::vec3{0.0f, 1.0f, 0.0f}   // up
     ));
     world_.add<glass::Transform>(cam, glass::Transform{cam_transform});
-    world_.add<glass::CameraComponent>(cam, glass::CameraComponent{std::move(camera), true});
+    world_.add<glass::CameraComponent>(cam, glass::CameraComponent{std::move(camera)});
+    renderer_.set_camera(cam);
 
     auto cube = world_.create();
     world_.add<glass::Transform>(cube, glass::Transform{glm::mat4{1.0f}});

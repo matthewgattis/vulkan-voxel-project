@@ -22,7 +22,6 @@ struct MaterialComponent {
 
 struct CameraComponent {
     Camera camera;
-    bool active{true};
 };
 
 } // namespace glass
