@@ -12,7 +12,7 @@
 namespace voxel {
 
 Application::Application()
-    : engine_{"Voxel", 1280, 960}
+    : engine_{"Voxel"}
     , renderer_{engine_}
     , material_{glass::Material::create(
           engine_,

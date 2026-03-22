@@ -99,18 +99,22 @@ Buffer Buffer::create_vertex_buffer(
 
     // Copy via one-shot command buffer
     vk::CommandBufferAllocateInfo alloc_info{
-        *command_pool,
-        vk::CommandBufferLevel::ePrimary,
-        1,
+        .commandPool = *command_pool,
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1,
     };
     auto cmd_buffers = device.allocateCommandBuffers(alloc_info);
     auto& cmd = cmd_buffers[0];
 
-    cmd.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cmd.copyBuffer(vk::Buffer{staging.buffer_}, vk::Buffer{vertex_buf.buffer_}, vk::BufferCopy{0, 0, size});
+    cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    cmd.copyBuffer(vk::Buffer{staging.buffer_}, vk::Buffer{vertex_buf.buffer_},
+                   vk::BufferCopy{.srcOffset = 0, .dstOffset = 0, .size = size});
     cmd.end();
 
-    vk::SubmitInfo submit_info{{}, {}, *cmd};
+    vk::SubmitInfo submit_info{
+        .commandBufferCount = 1,
+        .pCommandBuffers = &*cmd,
+    };
     queue.submit(submit_info);
     queue.waitIdle();
 
@@ -146,18 +150,22 @@ Buffer Buffer::create_index_buffer(
 
     // Copy via one-shot command buffer
     vk::CommandBufferAllocateInfo alloc_info{
-        *command_pool,
-        vk::CommandBufferLevel::ePrimary,
-        1,
+        .commandPool = *command_pool,
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1,
     };
     auto cmd_buffers = device.allocateCommandBuffers(alloc_info);
     auto& cmd = cmd_buffers[0];
 
-    cmd.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cmd.copyBuffer(vk::Buffer{staging.buffer_}, vk::Buffer{index_buf.buffer_}, vk::BufferCopy{0, 0, size});
+    cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    cmd.copyBuffer(vk::Buffer{staging.buffer_}, vk::Buffer{index_buf.buffer_},
+                   vk::BufferCopy{.srcOffset = 0, .dstOffset = 0, .size = size});
     cmd.end();
 
-    vk::SubmitInfo submit_info{{}, {}, *cmd};
+    vk::SubmitInfo submit_info{
+        .commandBufferCount = 1,
+        .pCommandBuffers = &*cmd,
+    };
     queue.submit(submit_info);
     queue.waitIdle();
 

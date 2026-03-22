@@ -17,7 +17,7 @@ static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
 class Engine {
 public:
-    Engine(std::string_view title, uint32_t width, uint32_t height);
+    Engine(std::string_view title);
     ~Engine();
 
     Engine(const Engine&) = delete;

@@ -22,18 +22,20 @@ Material Material::create(steel::Engine& engine,
     auto binding = Vertex::binding_description();
     auto attributes = Vertex::attribute_descriptions();
 
-    vk::PushConstantRange push_constant_range(
-        vk::ShaderStageFlagBits::eVertex,
-        0,
-        sizeof(glm::mat4)
-    );
+    vk::PushConstantRange push_constant_range{
+        .stageFlags = vk::ShaderStageFlagBits::eVertex,
+        .offset = 0,
+        .size = sizeof(glm::mat4),
+    };
 
     vk::DescriptorSetLayout set_layout = *frame_descriptor_layout;
-    vk::PipelineLayoutCreateInfo layout_info(
-        {},
-        1, &set_layout,
-        1, &push_constant_range
-    );
+    vk::PipelineLayoutCreateInfo layout_info{
+        .flags = {},
+        .setLayoutCount = 1,
+        .pSetLayouts = &set_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constant_range,
+    };
     vk::raii::PipelineLayout layout(engine.device(), layout_info);
 
     auto pipeline = steel::PipelineBuilder(engine.device(),

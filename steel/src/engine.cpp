@@ -13,8 +13,11 @@
 
 namespace steel {
 
-Engine::Engine(std::string_view title, uint32_t width, uint32_t height) {
+Engine::Engine(std::string_view title) {
     spdlog::info("steel::Engine initializing");
+
+    uint32_t width = 1280;
+    uint32_t height = 960;
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
@@ -211,32 +214,33 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
     // Begin command buffer
     auto& cmd = command_buffers_[current_frame_];
     cmd.reset();
-    cmd.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     // Begin scene render pass (renders to offscreen target)
     std::array<vk::ClearValue, 2> clear_values = {
         vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}},
-        vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}},
+        vk::ClearValue{vk::ClearDepthStencilValue{.depth = 1.0f, .stencil = 0}},
     };
 
     vk::RenderPassBeginInfo render_pass_info{
-        *render_pass_,
-        *offscreen_framebuffer_,
-        vk::Rect2D{{0, 0}, swapchain_extent_},
-        clear_values,
+        .renderPass = *render_pass_,
+        .framebuffer = *offscreen_framebuffer_,
+        .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_},
+        .clearValueCount = static_cast<uint32_t>(clear_values.size()),
+        .pClearValues = clear_values.data(),
     };
 
     cmd.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
 
     // Set viewport and scissor
     vk::Viewport viewport{
-        0.0f, 0.0f,
-        static_cast<float>(swapchain_extent_.width),
-        static_cast<float>(swapchain_extent_.height),
-        0.0f, 1.0f};
+        .x = 0.0f, .y = 0.0f,
+        .width = static_cast<float>(swapchain_extent_.width),
+        .height = static_cast<float>(swapchain_extent_.height),
+        .minDepth = 0.0f, .maxDepth = 1.0f};
     cmd.setViewport(0, viewport);
 
-    vk::Rect2D scissor{{0, 0}, swapchain_extent_};
+    vk::Rect2D scissor{.offset = {0, 0}, .extent = swapchain_extent_};
     cmd.setScissor(0, scissor);
 
     return &cmd;
@@ -250,21 +254,21 @@ void Engine::end_frame() {
 
     // Begin FXAA render pass (reads offscreen, writes to swapchain)
     vk::RenderPassBeginInfo fxaa_rp_info{
-        *fxaa_render_pass_,
-        *fxaa_framebuffers_[current_image_index_],
-        vk::Rect2D{{0, 0}, swapchain_extent_},
+        .renderPass = *fxaa_render_pass_,
+        .framebuffer = *fxaa_framebuffers_[current_image_index_],
+        .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_},
     };
 
     cmd.beginRenderPass(fxaa_rp_info, vk::SubpassContents::eInline);
 
     vk::Viewport viewport{
-        0.0f, 0.0f,
-        static_cast<float>(swapchain_extent_.width),
-        static_cast<float>(swapchain_extent_.height),
-        0.0f, 1.0f};
+        .x = 0.0f, .y = 0.0f,
+        .width = static_cast<float>(swapchain_extent_.width),
+        .height = static_cast<float>(swapchain_extent_.height),
+        .minDepth = 0.0f, .maxDepth = 1.0f};
     cmd.setViewport(0, viewport);
 
-    vk::Rect2D scissor{{0, 0}, swapchain_extent_};
+    vk::Rect2D scissor{.offset = {0, 0}, .extent = swapchain_extent_};
     cmd.setScissor(0, scissor);
 
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *fxaa_pipeline_);
@@ -277,9 +281,9 @@ void Engine::end_frame() {
     // When ImGui is disabled, the draw data is empty so this is essentially free.
     if (imgui_initialized_) {
         vk::RenderPassBeginInfo imgui_rp_info{
-            *imgui_render_pass_,
-            *imgui_framebuffers_[current_image_index_],
-            vk::Rect2D{{0, 0}, swapchain_extent_},
+            .renderPass = *imgui_render_pass_,
+            .framebuffer = *imgui_framebuffers_[current_image_index_],
+            .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_},
         };
 
         cmd.beginRenderPass(imgui_rp_info, vk::SubpassContents::eInline);
@@ -294,20 +298,27 @@ void Engine::end_frame() {
     vk::PipelineStageFlags wait_stages[]       = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
     vk::Semaphore          signal_semaphores[] = {*render_finished_[current_image_index_]};
 
+    vk::CommandBuffer cmd_handle = *cmd;
     vk::SubmitInfo submit_info{
-        wait_semaphores,
-        wait_stages,
-        *cmd,
-        signal_semaphores,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = wait_semaphores,
+        .pWaitDstStageMask = wait_stages,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd_handle,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = signal_semaphores,
     };
 
     graphics_queue_.submit(submit_info, *in_flight_fences_[current_frame_]);
 
     // Present
+    vk::SwapchainKHR swapchain_handle = *swapchain_;
     vk::PresentInfoKHR present_info{
-        signal_semaphores,
-        *swapchain_,
-        current_image_index_,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = signal_semaphores,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain_handle,
+        .pImageIndices = &current_image_index_,
     };
 
     bool needs_recreate = framebuffer_resized_;
@@ -333,12 +344,13 @@ void Engine::end_frame() {
 // ---------------------------------------------------------------------------
 
 void Engine::create_instance(std::string_view title) {
+    std::string title_str{title};
     vk::ApplicationInfo app_info{
-        std::string(title).c_str(),
-        VK_MAKE_VERSION(1, 0, 0),
-        "steel",
-        VK_MAKE_VERSION(1, 0, 0),
-        VK_API_VERSION_1_3,
+        .pApplicationName = title_str.c_str(),
+        .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+        .pEngineName = "steel",
+        .engineVersion = VK_MAKE_VERSION(1, 0, 0),
+        .apiVersion = VK_API_VERSION_1_3,
     };
 
     // Get required extensions from SDL
@@ -375,10 +387,12 @@ void Engine::create_instance(std::string_view title) {
 #endif
 
     vk::InstanceCreateInfo create_info{
-        flags,
-        &app_info,
-        layers,
-        extensions,
+        .flags = flags,
+        .pApplicationInfo = &app_info,
+        .enabledLayerCount = static_cast<uint32_t>(layers.size()),
+        .ppEnabledLayerNames = layers.data(),
+        .enabledExtensionCount = static_cast<uint32_t>(extensions.size()),
+        .ppEnabledExtensionNames = extensions.data(),
     };
 
     instance_ = vk::raii::Instance{context_, create_info};
@@ -525,9 +539,9 @@ void Engine::create_device() {
 
     float queue_priority = 1.0f;
     std::vector<vk::DeviceQueueCreateInfo> queue_create_infos;
-    queue_create_infos.push_back({{}, graphics_family_index_, 1, &queue_priority});
+    queue_create_infos.push_back({.queueFamilyIndex = graphics_family_index_, .queueCount = 1, .pQueuePriorities = &queue_priority});
     if (present_family_index_ != graphics_family_index_) {
-        queue_create_infos.push_back({{}, present_family_index_, 1, &queue_priority});
+        queue_create_infos.push_back({.queueFamilyIndex = present_family_index_, .queueCount = 1, .pQueuePriorities = &queue_priority});
     }
 
     std::vector<const char*> device_extensions = {
@@ -540,11 +554,11 @@ void Engine::create_device() {
     vk::PhysicalDeviceFeatures features{};
 
     vk::DeviceCreateInfo create_info{
-        {},
-        queue_create_infos,
-        {},
-        device_extensions,
-        &features,
+        .queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size()),
+        .pQueueCreateInfos = queue_create_infos.data(),
+        .enabledExtensionCount = static_cast<uint32_t>(device_extensions.size()),
+        .ppEnabledExtensionNames = device_extensions.data(),
+        .pEnabledFeatures = &features,
     };
 
     device_ = vk::raii::Device{physical_device_, create_info};
@@ -593,21 +607,19 @@ void Engine::create_swapchain() {
     vk::SwapchainKHR old_swapchain = *swapchain_;
 
     vk::SwapchainCreateInfoKHR create_info{
-        {},
-        *surface_,
-        image_count,
-        surface_format_.format,
-        surface_format_.colorSpace,
-        swapchain_extent_,
-        1,
-        vk::ImageUsageFlagBits::eColorAttachment,
-        vk::SharingMode::eExclusive,
-        {},
-        capabilities.currentTransform,
-        vk::CompositeAlphaFlagBitsKHR::eOpaque,
-        vk::PresentModeKHR::eFifo,
-        VK_TRUE,
-        old_swapchain,
+        .surface = *surface_,
+        .minImageCount = image_count,
+        .imageFormat = surface_format_.format,
+        .imageColorSpace = surface_format_.colorSpace,
+        .imageExtent = swapchain_extent_,
+        .imageArrayLayers = 1,
+        .imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
+        .imageSharingMode = vk::SharingMode::eExclusive,
+        .preTransform = capabilities.currentTransform,
+        .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+        .presentMode = vk::PresentModeKHR::eFifo,
+        .clipped = VK_TRUE,
+        .oldSwapchain = old_swapchain,
     };
 
     if (graphics_family_index_ != present_family_index_) {
@@ -624,12 +636,10 @@ void Engine::create_swapchain() {
     swapchain_image_views_.clear();
     for (auto image : swapchain_images_) {
         vk::ImageViewCreateInfo view_info{
-            {},
-            image,
-            vk::ImageViewType::e2D,
-            surface_format_.format,
-            {},
-            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+            .image = image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = surface_format_.format,
+            .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1},
         };
         swapchain_image_views_.emplace_back(device_, view_info);
     }
@@ -669,12 +679,10 @@ void Engine::create_depth_resources() {
     }
 
     vk::ImageViewCreateInfo view_info{
-        {},
-        vk::Image{depth_image_.image},
-        vk::ImageViewType::e2D,
-        depth_format_,
-        {},
-        {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1},
+        .image = vk::Image{depth_image_.image},
+        .viewType = vk::ImageViewType::e2D,
+        .format = depth_format_,
+        .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eDepth, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1},
     };
 
     depth_image_view_ = vk::raii::ImageView{device_, view_info};
@@ -711,12 +719,10 @@ void Engine::create_offscreen_target() {
     }
 
     vk::ImageViewCreateInfo view_info{
-        {},
-        vk::Image{offscreen_image_.image},
-        vk::ImageViewType::e2D,
-        surface_format_.format,
-        {},
-        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        .image = vk::Image{offscreen_image_.image},
+        .viewType = vk::ImageViewType::e2D,
+        .format = surface_format_.format,
+        .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1},
     };
 
     offscreen_image_view_ = vk::raii::ImageView{device_, view_info};
@@ -729,56 +735,53 @@ void Engine::create_offscreen_target() {
 
 void Engine::create_render_pass() {
     vk::AttachmentDescription color_attachment{
-        {},
-        surface_format_.format,
-        vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eClear,
-        vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eShaderReadOnlyOptimal,
+        .format = surface_format_.format,
+        .samples = vk::SampleCountFlagBits::e1,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+        .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+        .initialLayout = vk::ImageLayout::eUndefined,
+        .finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
     };
 
     vk::AttachmentDescription depth_attachment{
-        {},
-        depth_format_,
-        vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eClear,
-        vk::AttachmentStoreOp::eDontCare,
-        vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eDepthStencilAttachmentOptimal,
+        .format = depth_format_,
+        .samples = vk::SampleCountFlagBits::e1,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eDontCare,
+        .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+        .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+        .initialLayout = vk::ImageLayout::eUndefined,
+        .finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
     };
 
-    vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    vk::AttachmentReference depth_ref{1, vk::ImageLayout::eDepthStencilAttachmentOptimal};
+    vk::AttachmentReference color_ref{.attachment = 0, .layout = vk::ImageLayout::eColorAttachmentOptimal};
+    vk::AttachmentReference depth_ref{.attachment = 1, .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal};
 
     vk::SubpassDescription subpass{
-        {},
-        vk::PipelineBindPoint::eGraphics,
-        {},
-        color_ref,
-        {},
-        &depth_ref,
+        .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_ref,
+        .pDepthStencilAttachment = &depth_ref,
     };
 
     vk::SubpassDependency dependency{
-        VK_SUBPASS_EXTERNAL, 0,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
-        {},
-        vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+        .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+        .dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+        .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
     };
 
     std::array<vk::AttachmentDescription, 2> attachments = {color_attachment, depth_attachment};
 
     vk::RenderPassCreateInfo create_info{
-        {},
-        attachments,
-        subpass,
-        dependency,
+        .attachmentCount = static_cast<uint32_t>(attachments.size()),
+        .pAttachments = attachments.data(),
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency,
     };
 
     render_pass_ = vk::raii::RenderPass{device_, create_info};
@@ -792,12 +795,12 @@ void Engine::create_offscreen_framebuffer() {
     std::array<vk::ImageView, 2> attachments = {*offscreen_image_view_, *depth_image_view_};
 
     vk::FramebufferCreateInfo create_info{
-        {},
-        *render_pass_,
-        attachments,
-        swapchain_extent_.width,
-        swapchain_extent_.height,
-        1,
+        .renderPass = *render_pass_,
+        .attachmentCount = static_cast<uint32_t>(attachments.size()),
+        .pAttachments = attachments.data(),
+        .width = swapchain_extent_.width,
+        .height = swapchain_extent_.height,
+        .layers = 1,
     };
 
     offscreen_framebuffer_ = vk::raii::Framebuffer{device_, create_info};
@@ -809,39 +812,38 @@ void Engine::create_offscreen_framebuffer() {
 
 void Engine::create_fxaa_render_pass() {
     vk::AttachmentDescription color_attachment{
-        {},
-        surface_format_.format,
-        vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eColorAttachmentOptimal,
+        .format = surface_format_.format,
+        .samples = vk::SampleCountFlagBits::e1,
+        .loadOp = vk::AttachmentLoadOp::eDontCare,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+        .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+        .initialLayout = vk::ImageLayout::eUndefined,
+        .finalLayout = vk::ImageLayout::eColorAttachmentOptimal,
     };
 
-    vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+    vk::AttachmentReference color_ref{.attachment = 0, .layout = vk::ImageLayout::eColorAttachmentOptimal};
 
     vk::SubpassDescription subpass{
-        {},
-        vk::PipelineBindPoint::eGraphics,
-        {},
-        color_ref,
+        .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_ref,
     };
 
     vk::SubpassDependency dependency{
-        VK_SUBPASS_EXTERNAL, 0,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        {},
-        vk::AccessFlagBits::eColorAttachmentWrite,
+        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+        .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        .dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
     };
 
     vk::RenderPassCreateInfo create_info{
-        {},
-        1, &color_attachment,
-        1, &subpass,
-        1, &dependency,
+        .attachmentCount = 1,
+        .pAttachments = &color_attachment,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency,
     };
 
     fxaa_render_pass_ = vk::raii::RenderPass{device_, create_info};
@@ -858,12 +860,12 @@ void Engine::create_fxaa_framebuffers() {
         vk::ImageView attachment = *image_view;
 
         vk::FramebufferCreateInfo create_info{
-            {},
-            *fxaa_render_pass_,
-            1, &attachment,
-            swapchain_extent_.width,
-            swapchain_extent_.height,
-            1,
+            .renderPass = *fxaa_render_pass_,
+            .attachmentCount = 1,
+            .pAttachments = &attachment,
+            .width = swapchain_extent_.width,
+            .height = swapchain_extent_.height,
+            .layers = 1,
         };
 
         fxaa_framebuffers_.emplace_back(device_, create_info);
@@ -877,54 +879,55 @@ void Engine::create_fxaa_framebuffers() {
 void Engine::create_fxaa_descriptors() {
     // Sampler
     vk::SamplerCreateInfo sampler_info{
-        {},
-        vk::Filter::eLinear,
-        vk::Filter::eLinear,
-        vk::SamplerMipmapMode::eLinear,
-        vk::SamplerAddressMode::eClampToEdge,
-        vk::SamplerAddressMode::eClampToEdge,
-        vk::SamplerAddressMode::eClampToEdge,
+        .magFilter = vk::Filter::eLinear,
+        .minFilter = vk::Filter::eLinear,
+        .mipmapMode = vk::SamplerMipmapMode::eLinear,
+        .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeW = vk::SamplerAddressMode::eClampToEdge,
     };
     fxaa_sampler_ = vk::raii::Sampler{device_, sampler_info};
 
     // Descriptor set layout
     vk::DescriptorSetLayoutBinding binding{
-        0,
-        vk::DescriptorType::eCombinedImageSampler,
-        1,
-        vk::ShaderStageFlagBits::eFragment,
+        .binding = 0,
+        .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
     };
 
     vk::DescriptorSetLayoutCreateInfo layout_info{
-        {},
-        1, &binding,
+        .bindingCount = 1,
+        .pBindings = &binding,
     };
     fxaa_descriptor_set_layout_ = vk::raii::DescriptorSetLayout{device_, layout_info};
 
     // Pipeline layout
     vk::PipelineLayoutCreateInfo pl_layout_info{
-        {},
-        1, &*fxaa_descriptor_set_layout_,
+        .setLayoutCount = 1,
+        .pSetLayouts = &*fxaa_descriptor_set_layout_,
     };
     fxaa_pipeline_layout_ = vk::raii::PipelineLayout{device_, pl_layout_info};
 
     // Descriptor pool
     vk::DescriptorPoolSize pool_size{
-        vk::DescriptorType::eCombinedImageSampler,
-        1,
+        .type = vk::DescriptorType::eCombinedImageSampler,
+        .descriptorCount = 1,
     };
 
     vk::DescriptorPoolCreateInfo pool_info{
-        vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        1,
-        1, &pool_size,
+        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+        .maxSets = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes = &pool_size,
     };
     fxaa_descriptor_pool_ = vk::raii::DescriptorPool{device_, pool_info};
 
     // Allocate descriptor set
     vk::DescriptorSetAllocateInfo alloc_info{
-        *fxaa_descriptor_pool_,
-        1, &*fxaa_descriptor_set_layout_,
+        .descriptorPool = *fxaa_descriptor_pool_,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &*fxaa_descriptor_set_layout_,
     };
     auto sets = device_.allocateDescriptorSets(alloc_info);
     fxaa_descriptor_set_ = std::move(sets[0]);
@@ -937,18 +940,18 @@ void Engine::create_fxaa_descriptors() {
 
 void Engine::update_fxaa_descriptor() {
     vk::DescriptorImageInfo image_info{
-        *fxaa_sampler_,
-        *offscreen_image_view_,
-        vk::ImageLayout::eShaderReadOnlyOptimal,
+        .sampler = *fxaa_sampler_,
+        .imageView = *offscreen_image_view_,
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
     };
 
     vk::WriteDescriptorSet write{
-        *fxaa_descriptor_set_,
-        0,
-        0,
-        1,
-        vk::DescriptorType::eCombinedImageSampler,
-        &image_info,
+        .dstSet = *fxaa_descriptor_set_,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorCount = 1,
+        .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+        .pImageInfo = &image_info,
     };
 
     device_.updateDescriptorSets(write, {});
@@ -961,31 +964,28 @@ void Engine::update_fxaa_descriptor() {
 void Engine::create_fxaa_pipeline() {
     // Create shader modules from embedded SPIR-V
     vk::ShaderModuleCreateInfo vert_info{
-        {},
-        shaders::fullscreen_vert.size() * sizeof(uint32_t),
-        shaders::fullscreen_vert.data(),
+        .codeSize = shaders::fullscreen_vert.size() * sizeof(uint32_t),
+        .pCode = shaders::fullscreen_vert.data(),
     };
     vk::raii::ShaderModule vert_module{device_, vert_info};
 
     vk::ShaderModuleCreateInfo frag_info{
-        {},
-        shaders::fxaa_frag.size() * sizeof(uint32_t),
-        shaders::fxaa_frag.data(),
+        .codeSize = shaders::fxaa_frag.size() * sizeof(uint32_t),
+        .pCode = shaders::fxaa_frag.data(),
     };
     vk::raii::ShaderModule frag_module{device_, frag_info};
 
     std::array<vk::PipelineShaderStageCreateInfo, 2> shader_stages = {{
-        {{}, vk::ShaderStageFlagBits::eVertex,   *vert_module, "main"},
-        {{}, vk::ShaderStageFlagBits::eFragment, *frag_module, "main"},
+        {.stage = vk::ShaderStageFlagBits::eVertex,   .module = *vert_module, .pName = "main"},
+        {.stage = vk::ShaderStageFlagBits::eFragment, .module = *frag_module, .pName = "main"},
     }};
 
     // Empty vertex input (fullscreen triangle generated in vertex shader)
     vk::PipelineVertexInputStateCreateInfo vertex_input{};
 
     vk::PipelineInputAssemblyStateCreateInfo input_assembly{
-        {},
-        vk::PrimitiveTopology::eTriangleList,
-        VK_FALSE,
+        .topology = vk::PrimitiveTopology::eTriangleList,
+        .primitiveRestartEnable = VK_FALSE,
     };
 
     // Dynamic viewport and scissor
@@ -994,78 +994,75 @@ void Engine::create_fxaa_pipeline() {
         vk::DynamicState::eScissor,
     };
     vk::PipelineDynamicStateCreateInfo dynamic_state{
-        {},
-        dynamic_states,
+        .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
+        .pDynamicStates = dynamic_states.data(),
     };
 
     vk::PipelineViewportStateCreateInfo viewport_state{
-        {},
-        1, nullptr,
-        1, nullptr,
+        .viewportCount = 1,
+        .scissorCount = 1,
     };
 
     vk::PipelineRasterizationStateCreateInfo rasterizer{
-        {},
-        VK_FALSE,
-        VK_FALSE,
-        vk::PolygonMode::eFill,
-        vk::CullModeFlagBits::eNone,
-        vk::FrontFace::eClockwise,
-        VK_FALSE,
-        0.0f, 0.0f, 0.0f,
-        1.0f,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = vk::PolygonMode::eFill,
+        .cullMode = vk::CullModeFlagBits::eNone,
+        .frontFace = vk::FrontFace::eClockwise,
+        .depthBiasEnable = VK_FALSE,
+        .depthBiasConstantFactor = 0.0f,
+        .depthBiasClamp = 0.0f,
+        .depthBiasSlopeFactor = 0.0f,
+        .lineWidth = 1.0f,
     };
 
     vk::PipelineMultisampleStateCreateInfo multisampling{
-        {},
-        vk::SampleCountFlagBits::e1,
-        VK_FALSE,
+        .rasterizationSamples = vk::SampleCountFlagBits::e1,
+        .sampleShadingEnable = VK_FALSE,
     };
 
     vk::PipelineDepthStencilStateCreateInfo depth_stencil{
-        {},
-        VK_FALSE,
-        VK_FALSE,
-        vk::CompareOp::eLessOrEqual,
-        VK_FALSE,
-        VK_FALSE,
+        .depthTestEnable = VK_FALSE,
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp = vk::CompareOp::eLessOrEqual,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE,
     };
 
     vk::PipelineColorBlendAttachmentState color_blend_attachment{
-        VK_FALSE,
-        vk::BlendFactor::eOne,
-        vk::BlendFactor::eZero,
-        vk::BlendOp::eAdd,
-        vk::BlendFactor::eOne,
-        vk::BlendFactor::eZero,
-        vk::BlendOp::eAdd,
-        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+        .blendEnable = VK_FALSE,
+        .srcColorBlendFactor = vk::BlendFactor::eOne,
+        .dstColorBlendFactor = vk::BlendFactor::eZero,
+        .colorBlendOp = vk::BlendOp::eAdd,
+        .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+        .dstAlphaBlendFactor = vk::BlendFactor::eZero,
+        .alphaBlendOp = vk::BlendOp::eAdd,
+        .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
     };
 
     vk::PipelineColorBlendStateCreateInfo color_blending{
-        {},
-        VK_FALSE,
-        vk::LogicOp::eCopy,
-        1, &color_blend_attachment,
-        {{0.0f, 0.0f, 0.0f, 0.0f}},
+        .logicOpEnable = VK_FALSE,
+        .logicOp = vk::LogicOp::eCopy,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment,
+        .blendConstants = {{0.0f, 0.0f, 0.0f, 0.0f}},
     };
 
     vk::GraphicsPipelineCreateInfo pipeline_info{
-        {},
-        shader_stages,
-        &vertex_input,
-        &input_assembly,
-        nullptr,
-        &viewport_state,
-        &rasterizer,
-        &multisampling,
-        &depth_stencil,
-        &color_blending,
-        &dynamic_state,
-        *fxaa_pipeline_layout_,
-        *fxaa_render_pass_,
-        0,
+        .stageCount = static_cast<uint32_t>(shader_stages.size()),
+        .pStages = shader_stages.data(),
+        .pVertexInputState = &vertex_input,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState = &multisampling,
+        .pDepthStencilState = &depth_stencil,
+        .pColorBlendState = &color_blending,
+        .pDynamicState = &dynamic_state,
+        .layout = *fxaa_pipeline_layout_,
+        .renderPass = *fxaa_render_pass_,
+        .subpass = 0,
     };
 
     fxaa_pipeline_ = vk::raii::Pipeline{device_, nullptr, pipeline_info};
@@ -1078,15 +1075,15 @@ void Engine::create_fxaa_pipeline() {
 
 void Engine::create_command_pool() {
     vk::CommandPoolCreateInfo pool_info{
-        vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-        graphics_family_index_,
+        .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+        .queueFamilyIndex = graphics_family_index_,
     };
     command_pool_ = vk::raii::CommandPool{device_, pool_info};
 
     vk::CommandBufferAllocateInfo alloc_info{
-        *command_pool_,
-        vk::CommandBufferLevel::ePrimary,
-        MAX_FRAMES_IN_FLIGHT,
+        .commandPool = *command_pool_,
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = MAX_FRAMES_IN_FLIGHT,
     };
     command_buffers_ = device_.allocateCommandBuffers(alloc_info);
 }
@@ -1102,7 +1099,7 @@ void Engine::create_sync_objects() {
     in_flight_fences_.reserve(MAX_FRAMES_IN_FLIGHT);
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         image_available_.emplace_back(device_, vk::SemaphoreCreateInfo{});
-        in_flight_fences_.emplace_back(device_, vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
+        in_flight_fences_.emplace_back(device_, vk::FenceCreateInfo{.flags = vk::FenceCreateFlagBits::eSignaled});
     }
 
     // render_finished semaphores are per-swapchain-image (indexed by acquired image)
@@ -1122,39 +1119,39 @@ void Engine::create_sync_objects() {
 
 void Engine::create_imgui_render_pass() {
     vk::AttachmentDescription color_attachment{
-        {},
-        surface_format_.format,
-        vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eLoad,
-        vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        vk::ImageLayout::ePresentSrcKHR,
+        .format = surface_format_.format,
+        .samples = vk::SampleCountFlagBits::e1,
+        .loadOp = vk::AttachmentLoadOp::eLoad,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+        .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+        .initialLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .finalLayout = vk::ImageLayout::ePresentSrcKHR,
     };
 
-    vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+    vk::AttachmentReference color_ref{.attachment = 0, .layout = vk::ImageLayout::eColorAttachmentOptimal};
 
     vk::SubpassDescription subpass{
-        {},
-        vk::PipelineBindPoint::eGraphics,
-        {},
-        color_ref,
+        .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_ref,
     };
 
     vk::SubpassDependency dependency{
-        VK_SUBPASS_EXTERNAL, 0,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        vk::AccessFlagBits::eColorAttachmentWrite,
-        vk::AccessFlagBits::eColorAttachmentWrite,
+        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+        .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        .dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+        .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
     };
 
     vk::RenderPassCreateInfo create_info{
-        {},
-        1, &color_attachment,
-        1, &subpass,
-        1, &dependency,
+        .attachmentCount = 1,
+        .pAttachments = &color_attachment,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency,
     };
 
     imgui_render_pass_ = vk::raii::RenderPass{device_, create_info};
@@ -1167,12 +1164,12 @@ void Engine::create_imgui_framebuffers() {
         vk::ImageView attachment = *image_view;
 
         vk::FramebufferCreateInfo create_info{
-            {},
-            *imgui_render_pass_,
-            1, &attachment,
-            swapchain_extent_.width,
-            swapchain_extent_.height,
-            1,
+            .renderPass = *imgui_render_pass_,
+            .attachmentCount = 1,
+            .pAttachments = &attachment,
+            .width = swapchain_extent_.width,
+            .height = swapchain_extent_.height,
+            .layers = 1,
         };
 
         imgui_framebuffers_.emplace_back(device_, create_info);
@@ -1182,13 +1179,14 @@ void Engine::create_imgui_framebuffers() {
 void Engine::init_imgui() {
     // Create a dedicated descriptor pool for ImGui
     std::array<vk::DescriptorPoolSize, 1> pool_sizes = {{
-        {vk::DescriptorType::eCombinedImageSampler, 1},
+        {.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = 1},
     }};
 
     vk::DescriptorPoolCreateInfo pool_info{
-        vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        1,
-        pool_sizes,
+        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+        .maxSets = 1,
+        .poolSizeCount = static_cast<uint32_t>(pool_sizes.size()),
+        .pPoolSizes = pool_sizes.data(),
     };
     imgui_descriptor_pool_ = vk::raii::DescriptorPool{device_, pool_info};
 
