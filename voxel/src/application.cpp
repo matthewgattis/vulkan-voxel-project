@@ -2,6 +2,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <filesystem>
 
 namespace voxel {
@@ -9,19 +11,25 @@ namespace voxel {
 Application::Application()
     : engine_{"Voxel", 1280, 960}
     , geometry_{glass::Geometry::create(engine_, CubeMesh{})}
+    , renderer_{engine_}
     , material_{glass::Material::create(
           engine_,
           glass::Shader::load(vk::ShaderStageFlagBits::eVertex,
                               std::filesystem::path{SHADER_DIR} / "triangle.vert.spv"),
           glass::Shader::load(vk::ShaderStageFlagBits::eFragment,
-                              std::filesystem::path{SHADER_DIR} / "triangle.frag.spv"))}
-    , camera_{60.0f,
-              static_cast<float>(engine_.extent().width) / static_cast<float>(engine_.extent().height),
-              0.1f, 100.0f}
-    , renderer_{engine_}
+                              std::filesystem::path{SHADER_DIR} / "triangle.frag.spv"),
+          renderer_.frame_descriptor_layout())}
 {
-    camera_.set_position({2.0f, 2.0f, 2.0f});
-    camera_.look_at({0.0f, 0.0f, 0.0f});
+    auto cam = world_.create();
+    glass::Camera camera{60.0f, static_cast<float>(engine_.extent().width) / static_cast<float>(engine_.extent().height), 0.1f, 100.0f};
+    // Camera transform is the inverse of the view matrix (world-space pose)
+    glm::mat4 cam_transform = glm::inverse(glm::lookAt(
+        glm::vec3{2.0f, 2.0f, 2.0f},  // position
+        glm::vec3{0.0f, 0.0f, 0.0f},  // target
+        glm::vec3{0.0f, 1.0f, 0.0f}   // up
+    ));
+    world_.add<glass::Transform>(cam, glass::Transform{cam_transform});
+    world_.add<glass::CameraComponent>(cam, glass::CameraComponent{std::move(camera), true});
 
     auto cube = world_.create();
     world_.add<glass::Transform>(cube, glass::Transform{glm::mat4{1.0f}});
@@ -36,7 +44,7 @@ Application::~Application() {
 }
 
 void Application::run() {
-    renderer_.run(camera_, world_);
+    renderer_.run(world_);
 }
 
 } // namespace voxel

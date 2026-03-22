@@ -35,6 +35,9 @@ public:
     vk::Buffer     handle() const { return *buffer_; }
     vk::DeviceSize size()   const { return size_; }
 
+    void* map(vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE);
+    void  unmap();
+
     Buffer(Buffer&&) = default;
     Buffer& operator=(Buffer&&) = default;
 

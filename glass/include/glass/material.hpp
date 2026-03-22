@@ -10,7 +10,8 @@ class Material {
 public:
     static Material create(steel::Engine& engine,
                            const Shader& vertex_shader,
-                           const Shader& fragment_shader);
+                           const Shader& fragment_shader,
+                           const vk::raii::DescriptorSetLayout& frame_descriptor_layout);
 
     void bind(const vk::raii::CommandBuffer& cmd) const;
     const vk::raii::PipelineLayout& layout() const { return layout_; }

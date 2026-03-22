@@ -1,7 +1,6 @@
 #pragma once
 
 #include <steel/engine.hpp>
-#include <glass/camera.hpp>
 #include <glass/shader.hpp>
 #include <glass/geometry.hpp>
 #include <glass/material.hpp>
@@ -89,9 +88,8 @@ public:
 private:
     steel::Engine engine_;
     glass::Geometry geometry_;
-    glass::Material material_;
-    glass::Camera camera_;
     glass::Renderer renderer_;
+    glass::Material material_;
     glass::World world_;
 };
 

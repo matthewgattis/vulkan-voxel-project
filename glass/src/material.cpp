@@ -17,7 +17,8 @@ void Material::bind(const vk::raii::CommandBuffer& cmd) const {
 
 Material Material::create(steel::Engine& engine,
                            const Shader& vertex_shader,
-                           const Shader& fragment_shader) {
+                           const Shader& fragment_shader,
+                           const vk::raii::DescriptorSetLayout& frame_descriptor_layout) {
     auto binding = Vertex::binding_description();
     auto attributes = Vertex::attribute_descriptions();
 
@@ -27,12 +28,11 @@ Material Material::create(steel::Engine& engine,
         sizeof(glm::mat4)
     );
 
+    vk::DescriptorSetLayout set_layout = *frame_descriptor_layout;
     vk::PipelineLayoutCreateInfo layout_info(
-        {},    // flags
-        0,     // setLayoutCount
-        nullptr, // pSetLayouts
-        1,     // pushConstantRangeCount
-        &push_constant_range
+        {},
+        1, &set_layout,
+        1, &push_constant_range
     );
     vk::raii::PipelineLayout layout(engine.device(), layout_info);
 

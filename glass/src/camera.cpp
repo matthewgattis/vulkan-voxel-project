@@ -9,27 +9,12 @@ Camera::Camera(float fov_degrees, float aspect_ratio, float near_plane, float fa
     , aspect_ratio_(aspect_ratio)
     , near_plane_(near_plane)
     , far_plane_(far_plane) {
-    update_view();
     update_projection();
-}
-
-void Camera::set_position(const glm::vec3& position) {
-    position_ = position;
-    update_view();
-}
-
-void Camera::look_at(const glm::vec3& target) {
-    target_ = target;
-    update_view();
 }
 
 void Camera::set_aspect_ratio(float aspect_ratio) {
     aspect_ratio_ = aspect_ratio;
     update_projection();
-}
-
-void Camera::update_view() {
-    view_ = glm::lookAt(position_, target_, up_);
 }
 
 void Camera::update_projection() {

@@ -41,6 +41,7 @@ public:
     const vk::raii::Queue&      graphics_queue() const { return graphics_queue_; }
     const vk::raii::CommandPool& command_pool()  const { return command_pool_; }
     uint32_t                    graphics_family() const { return graphics_family_index_; }
+    uint32_t                    current_frame()   const { return current_frame_; }
 
 private:
     void create_instance(std::string_view title);
