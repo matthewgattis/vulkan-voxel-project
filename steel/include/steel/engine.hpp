@@ -4,6 +4,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include <glm/vec2.hpp>
+
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -42,6 +44,12 @@ public:
     const vk::raii::CommandPool& command_pool()  const { return command_pool_; }
     uint32_t                    graphics_family() const { return graphics_family_index_; }
     uint32_t                    current_frame()   const { return current_frame_; }
+
+    // Input state
+    const bool* keyboard_state() const;
+    float mouse_dx() const { return mouse_dx_; }
+    float mouse_dy() const { return mouse_dy_; }
+    float delta_time() const { return delta_time_; }
 
 private:
     void create_instance(std::string_view title);
@@ -127,6 +135,14 @@ private:
     uint32_t current_frame_ = 0;
     uint32_t current_image_index_ = 0;
     bool framebuffer_resized_ = false;
+
+    // Input state
+    float mouse_dx_ = 0.0f;
+    float mouse_dy_ = 0.0f;
+    float delta_time_ = 0.0f;
+    uint64_t last_frame_time_ = 0;
+    bool mouse_captured_ = false;
+    bool mouse_capture_first_frame_ = false;
 };
 
 } // namespace steel

@@ -3,6 +3,10 @@ add_executable(voxel)
 target_sources(voxel PRIVATE
     src/main.cpp
     src/application.cpp
+    src/camera_controller.cpp
+    src/chunk.cpp
+    src/chunk_mesh.cpp
+    src/terrain.cpp
 )
 
 target_include_directories(voxel PRIVATE

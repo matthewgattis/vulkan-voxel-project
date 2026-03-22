@@ -29,32 +29,46 @@ cd build && ctest --output-on-failure
 ./build/voxel/voxel
 ```
 
+## Controls
+
+- **Left-click drag** — Mouse look
+- **WASD** — Move on XY plane
+- **Space / Left Shift** — Move up / down (Z axis)
+- **Tab / Left Ctrl** — Sprint (latches while moving, 2x speed)
+
 ## Project Structure
 
 ```
 ├── steel/          Vulkan RAII helpers (namespace: steel)
-│   ├── engine      SDL3 window, Vulkan instance/device/swapchain, depth buffer, render pass, FXAA post-processing
+│   ├── engine      SDL3 window, Vulkan instance/device/swapchain, input, FXAA post-processing
 │   ├── pipeline    Fluent graphics pipeline builder (dynamic viewport/scissor)
 │   ├── buffer      Vertex/index buffer creation with staging upload
-│   └── shaders/    Internal GLSL shaders (FXAA), compiled to embedded SPIR-V at build time
+│   ├── uniform_buffer  Header-only per-frame UBO template with descriptor management
+│   └── shaders/    Internal GLSL shaders (FXAA 3.11), compiled to embedded SPIR-V at build time
 ├── glass/          Engine abstraction layer (namespace: glass)
 │   ├── shader      SPIR-V loader (stage + binary data)
 │   ├── mesh        Abstract data-only mesh interface (vertices/indices spans)
 │   ├── geometry    GPU-side buffers created from a Mesh
-│   ├── material    Shader pipeline wrapper
+│   ├── material    Shader pipeline wrapper (with descriptor set layout for per-frame UBO)
 │   ├── entity      Lightweight entity handle (index + generation)
 │   ├── component_pool  Sparse-set component storage
 │   ├── world       Entity manager with component operations
 │   ├── view        Multi-component query iterator
-│   ├── components  Transform, MeshComponent, MaterialComponent
-│   ├── camera      Perspective camera with view/projection matrices
-│   ├── renderer    ECS and scene graph rendering
+│   ├── components  Transform, MeshComponent, MaterialComponent, Velocity, CameraComponent
+│   ├── camera      Projection-only perspective camera (view derived from Transform)
+│   ├── renderer    ECS rendering with per-frame UBO and explicit camera entity
 │   └── vertex      Shared vertex format (position + normal + color)
 ├── voxel/          Application executable (namespace: voxel)
-│   ├── application Colored cube renderer using glass API
+│   ├── application Voxel terrain renderer with spectator camera
+│   ├── voxel       VoxelType enum and helpers (Grass, Dirt, Stone)
+│   ├── chunk       16x16x16 voxel data storage
+│   ├── chunk_mesh  Mesh generation with per-vertex AO and cross-chunk culling
+│   ├── terrain     Simplex noise terrain generation
+│   ├── camera_controller  Spectator camera with velocity physics and sprint
 │   ├── shaders/    GLSL shaders (compiled to SPIR-V via glslc)
 │   └── main        Entry point
-└── test/           Google Test suite (90 tests)
+├── docs/           Design notes and scaling documentation
+└── test/           Google Test suite
 ```
 
 ## Dependencies
@@ -65,7 +79,7 @@ Managed via [vcpkg](https://github.com/microsoft/vcpkg) (included as a git submo
 |---------|---------|
 | vulkan | Graphics API |
 | vulkan-memory-allocator | GPU memory management |
-| glm | Linear algebra |
+| glm | Linear algebra (noise, transforms) |
 | sdl3 | Windowing and input |
 | gtest | Testing framework |
 | spdlog | Structured logging |
@@ -81,10 +95,10 @@ Managed via [vcpkg](https://github.com/microsoft/vcpkg) (included as a git submo
 
 Three-layer architecture: **steel** -> **glass** -> **voxel**.
 
-**steel** wraps Vulkan initialization and rendering into RAII types (`vk::raii::*`) so resources clean up automatically. The `Engine` class provides a `begin_frame()`/`end_frame()` interface with frames-in-flight synchronization (`MAX_FRAMES_IN_FLIGHT` = 2), plus `wait_idle()` for clean shutdown. Command buffers, fences, and acquire semaphores are per frame in flight; present semaphores are per swapchain image. Engine includes always-on FXAA anti-aliasing: the scene renders to an offscreen target, then an FXAA fullscreen pass reads it via a combined image sampler and writes to the swapchain. The FXAA shaders (`fullscreen.vert`, `fxaa.frag`) live in `steel/shaders/`, are compiled to SPIR-V at build time, and embedded as `constexpr` arrays in a generated header (not checked into git). The FXAA pipeline is built directly, separate from `PipelineBuilder`. The external `begin_frame()`/`end_frame()` API is unchanged — glass and voxel are unaware of FXAA. Engine auto-selects the GPU based on capability checks (queue families, swapchain extension, surface formats, depth format), and the depth format is selected at runtime. Supports window resize via swapchain recreation, high-DPI rendering, and auto-selects the largest fitting 4:3 resolution for the display. `PipelineBuilder` takes SPIR-V bytecode at construction and uses a fluent API for remaining pipeline state; viewport and scissor are dynamic state set at draw time, so pipelines do not need to be recreated on window resize. `Buffer` handles device-local vertex and index buffer creation with staging transfers. Diagnostic logging uses spdlog.
+**steel** wraps Vulkan initialization and rendering into RAII types (`vk::raii::*`) so resources clean up automatically. The `Engine` class provides a `begin_frame()`/`end_frame()` interface with frames-in-flight synchronization, input handling (keyboard state, mouse capture on left-click drag, delta time), and always-on FXAA 3.11 anti-aliasing (quality preset 12 with edge endpoint search). `UniformBuffer<T>` is a header-only template managing per-frame-in-flight descriptor sets and persistently mapped buffers. `PipelineBuilder` uses a fluent API with dynamic viewport/scissor. `Buffer` handles device-local vertex and index buffer creation with staging transfers.
 
-**glass** sits between steel and the application, providing engine-level abstractions. `Shader` loads SPIR-V from disk and exposes its bytecode and stage. `Mesh` is a data-only abstract interface returning `vertices()` and `indices()` spans. `Geometry` is created from a `Mesh`, uploading vertex and index data to the GPU. `Material` takes `Shader` objects and builds a pipeline, and exposes its pipeline layout for push constant binding. `Camera` provides perspective projection with Vulkan Y-flip correction. Glass includes a sparse-set Entity Component System: `Entity` is a lightweight handle (index + generation), `ComponentPool<T>` provides O(1) add/remove/get, `World` manages entity lifecycles and component storage, and `View<Ts...>` queries entities matching multiple component types. Standard components are `Transform`, `MeshComponent`, and `MaterialComponent`. `Renderer` supports both ECS (`World`) and legacy scene graph (`SceneNode`) paths, pushing MVP matrices via push constants per draw call. The renderer updates the camera's aspect ratio each frame from the engine's current extent so resize works correctly. Application code uses glass and never touches Vulkan objects directly.
+**glass** provides engine-level abstractions. `Camera` is projection-only (fov, aspect, near, far); the view matrix is derived from the entity's `Transform` via `glm::inverse()`. The ECS (`Entity`, `ComponentPool<T>`, `World`, `View<Ts...>`) uses sparse-set storage for O(1) component operations. `Renderer` takes an explicit camera entity via `set_camera()`, computes `view_projection` each frame, and updates a per-frame UBO (set 0). Per-object model matrices are pushed via push constants. Standard components: `Transform`, `MeshComponent`, `MaterialComponent`, `Velocity`, `CameraComponent`.
 
-**voxel** is the application. It currently renders a colored cube with a perspective camera positioned at (2,2,2) looking at the origin. It implements `glass::Mesh` for the cube geometry, creates `Geometry` and `Material` resources, then populates a `World` with an entity that has `Transform`, `MeshComponent`, and `MaterialComponent`. The `Renderer` queries the ECS world each frame to draw all entities. Shaders are written in GLSL 450 and compiled to SPIR-V at build time.
+**voxel** is the application. It generates terrain from simplex noise across a 4x4 chunk grid (16x16x16 voxels per chunk, Z-up). `ChunkMesh` performs per-face neighbor culling (with cross-chunk lookups via a `SolidQuery` function), per-vertex ambient occlusion (3-neighbor corner/edge detection), and AO-aware quad triangulation. Shaders use half-Lambert lighting. The spectator camera uses velocity-based physics with subtractive friction, sprint support, and frame-rate independent integration.
 
 On macOS, MoltenVK portability extensions are automatically enabled.

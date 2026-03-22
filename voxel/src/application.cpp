@@ -4,13 +4,13 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <cmath>
 #include <filesystem>
 
 namespace voxel {
 
 Application::Application()
     : engine_{"Voxel", 1280, 960}
-    , geometry_{glass::Geometry::create(engine_, CubeMesh{})}
     , renderer_{engine_}
     , material_{glass::Material::create(
           engine_,
@@ -19,23 +19,24 @@ Application::Application()
           glass::Shader::load(vk::ShaderStageFlagBits::eFragment,
                               std::filesystem::path{SHADER_DIR} / "triangle.frag.spv"),
           renderer_.frame_descriptor_layout())}
+    , terrain_{engine_, world_, material_}
+    , camera_entity_{world_.create()}
+    , camera_controller_{
+          glm::vec3{32.0f, -20.0f, 40.0f},
+          0.0f,                                     // yaw: looking along +Y
+          std::atan2(-30.0f, 52.0f)}                // pitch: direction (0,52,-30)
 {
-    auto cam = world_.create();
-    glass::Camera camera{60.0f, static_cast<float>(engine_.extent().width) / static_cast<float>(engine_.extent().height), 0.1f, 100.0f};
-    // Camera transform is the inverse of the view matrix (world-space pose)
-    glm::mat4 cam_transform = glm::inverse(glm::lookAt(
-        glm::vec3{2.0f, 2.0f, 2.0f},  // position
-        glm::vec3{0.0f, 0.0f, 0.0f},  // target
-        glm::vec3{0.0f, 1.0f, 0.0f}   // up
-    ));
-    world_.add<glass::Transform>(cam, glass::Transform{cam_transform});
-    world_.add<glass::CameraComponent>(cam, glass::CameraComponent{std::move(camera)});
-    renderer_.set_camera(cam);
+    glass::Camera camera{60.0f,
+        static_cast<float>(engine_.extent().width) / static_cast<float>(engine_.extent().height),
+        0.1f, 500.0f};
 
-    auto cube = world_.create();
-    world_.add<glass::Transform>(cube, glass::Transform{glm::mat4{1.0f}});
-    world_.add<glass::MeshComponent>(cube, glass::MeshComponent{&geometry_});
-    world_.add<glass::MaterialComponent>(cube, glass::MaterialComponent{&material_});
+    world_.add<glass::Transform>(camera_entity_, glass::Transform{glm::mat4{1.0f}});
+    world_.add<glass::Velocity>(camera_entity_, glass::Velocity{});
+    world_.add<glass::CameraComponent>(camera_entity_, glass::CameraComponent{std::move(camera)});
+    renderer_.set_camera(camera_entity_);
+
+    // Set the initial camera transform via one controller update
+    camera_controller_.update(engine_, world_, camera_entity_);
 
     spdlog::info("Application initialized");
 }
@@ -45,7 +46,11 @@ Application::~Application() {
 }
 
 void Application::run() {
-    renderer_.run(world_);
+    while (engine_.poll_events()) {
+        camera_controller_.update(engine_, world_, camera_entity_);
+        renderer_.render_frame(world_);
+    }
+    engine_.wait_idle();
 }
 
 } // namespace voxel
