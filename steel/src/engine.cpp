@@ -1,9 +1,6 @@
 #include <steel/engine.hpp>
-#include "steel/fxaa_shaders.hpp"
 
 #include <imgui.h>
-#include <imgui_impl_sdl3.h>
-#include <imgui_impl_vulkan.h>
 
 #include <spdlog/spdlog.h>
 
@@ -74,15 +71,17 @@ Engine::Engine(std::string_view title) {
     create_offscreen_target();
     create_render_pass();
     create_offscreen_framebuffer();
-    create_fxaa_render_pass();
-    create_fxaa_framebuffers();
     create_command_pool();
     create_sync_objects();
-    create_fxaa_descriptors();
-    create_fxaa_pipeline();
-    create_imgui_render_pass();
-    create_imgui_framebuffers();
-    init_imgui();
+
+    fxaa_pass_.create(device_, surface_format_.format, swapchain_extent_,
+                      swapchain_image_views_, offscreen_image_view_);
+    imgui_pass_.create(instance_, physical_device_, device_,
+                       graphics_family_index_, graphics_queue_,
+                       surface_format_.format, swapchain_extent_,
+                       swapchain_image_views_,
+                       static_cast<uint32_t>(swapchain_images_.size()),
+                       window_);
 
     last_frame_time_ = SDL_GetTicks();
 
@@ -91,7 +90,7 @@ Engine::Engine(std::string_view title) {
 
 Engine::~Engine() {
     wait_idle();
-    shutdown_imgui();
+    imgui_pass_.shutdown();
 
     // Destroy VMA-managed images before allocator
     depth_image_ = VmaImage{};
@@ -137,8 +136,8 @@ bool Engine::poll_events() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         // Let ImGui process events when mouse is not captured
-        if (imgui_initialized_ && !mouse_captured_) {
-            ImGui_ImplSDL3_ProcessEvent(&event);
+        if (imgui_pass_.initialized() && !mouse_captured_) {
+            imgui_pass_.process_event(event);
         }
 
         if (event.type == SDL_EVENT_QUIT) {
@@ -152,12 +151,12 @@ bool Engine::poll_events() {
         // Toggle ImGui with F3
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_F3 &&
             !event.key.repeat) {
-            imgui_enabled_ = !imgui_enabled_;
+            imgui_pass_.toggle_enabled();
         }
 
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
             // Don't capture mouse if ImGui wants it
-            if (!imgui_enabled_ || !ImGui::GetIO().WantCaptureMouse) {
+            if (!imgui_pass_.enabled() || !ImGui::GetIO().WantCaptureMouse) {
                 mouse_captured_ = true;
                 mouse_capture_first_frame_ = true;
                 SDL_SetWindowRelativeMouseMode(window_, true);
@@ -252,44 +251,12 @@ void Engine::end_frame() {
     // End scene render pass
     cmd.endRenderPass();
 
-    // Begin FXAA render pass (reads offscreen, writes to swapchain)
-    vk::RenderPassBeginInfo fxaa_rp_info{
-        .renderPass = *fxaa_render_pass_,
-        .framebuffer = *fxaa_framebuffers_[current_image_index_],
-        .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_},
-    };
-
-    cmd.beginRenderPass(fxaa_rp_info, vk::SubpassContents::eInline);
-
-    vk::Viewport viewport{
-        .x = 0.0f, .y = 0.0f,
-        .width = static_cast<float>(swapchain_extent_.width),
-        .height = static_cast<float>(swapchain_extent_.height),
-        .minDepth = 0.0f, .maxDepth = 1.0f};
-    cmd.setViewport(0, viewport);
-
-    vk::Rect2D scissor{.offset = {0, 0}, .extent = swapchain_extent_};
-    cmd.setScissor(0, scissor);
-
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *fxaa_pipeline_);
-    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *fxaa_pipeline_layout_, 0, *fxaa_descriptor_set_, {});
-    cmd.draw(3, 1, 0, 0);
-
-    cmd.endRenderPass();
+    // FXAA post-process pass
+    fxaa_pass_.apply(cmd, current_image_index_, swapchain_extent_);
 
     // ImGui render pass — always runs for layout transition to ePresentSrcKHR.
     // When ImGui is disabled, the draw data is empty so this is essentially free.
-    if (imgui_initialized_) {
-        vk::RenderPassBeginInfo imgui_rp_info{
-            .renderPass = *imgui_render_pass_,
-            .framebuffer = *imgui_framebuffers_[current_image_index_],
-            .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_},
-        };
-
-        cmd.beginRenderPass(imgui_rp_info, vk::SubpassContents::eInline);
-        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *cmd);
-        cmd.endRenderPass();
-    }
+    imgui_pass_.render(cmd, current_image_index_, swapchain_extent_);
 
     cmd.end();
 
@@ -806,268 +773,6 @@ void Engine::create_offscreen_framebuffer() {
     offscreen_framebuffer_ = vk::raii::Framebuffer{device_, create_info};
 }
 
-// ---------------------------------------------------------------------------
-// FXAA render pass
-// ---------------------------------------------------------------------------
-
-void Engine::create_fxaa_render_pass() {
-    vk::AttachmentDescription color_attachment{
-        .format = surface_format_.format,
-        .samples = vk::SampleCountFlagBits::e1,
-        .loadOp = vk::AttachmentLoadOp::eDontCare,
-        .storeOp = vk::AttachmentStoreOp::eStore,
-        .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
-        .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
-        .initialLayout = vk::ImageLayout::eUndefined,
-        .finalLayout = vk::ImageLayout::eColorAttachmentOptimal,
-    };
-
-    vk::AttachmentReference color_ref{.attachment = 0, .layout = vk::ImageLayout::eColorAttachmentOptimal};
-
-    vk::SubpassDescription subpass{
-        .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &color_ref,
-    };
-
-    vk::SubpassDependency dependency{
-        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
-        .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        .dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-    };
-
-    vk::RenderPassCreateInfo create_info{
-        .attachmentCount = 1,
-        .pAttachments = &color_attachment,
-        .subpassCount = 1,
-        .pSubpasses = &subpass,
-        .dependencyCount = 1,
-        .pDependencies = &dependency,
-    };
-
-    fxaa_render_pass_ = vk::raii::RenderPass{device_, create_info};
-    spdlog::info("FXAA render pass created");
-}
-
-// ---------------------------------------------------------------------------
-// FXAA framebuffers (per swapchain image)
-// ---------------------------------------------------------------------------
-
-void Engine::create_fxaa_framebuffers() {
-    fxaa_framebuffers_.clear();
-    for (const auto& image_view : swapchain_image_views_) {
-        vk::ImageView attachment = *image_view;
-
-        vk::FramebufferCreateInfo create_info{
-            .renderPass = *fxaa_render_pass_,
-            .attachmentCount = 1,
-            .pAttachments = &attachment,
-            .width = swapchain_extent_.width,
-            .height = swapchain_extent_.height,
-            .layers = 1,
-        };
-
-        fxaa_framebuffers_.emplace_back(device_, create_info);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FXAA descriptors
-// ---------------------------------------------------------------------------
-
-void Engine::create_fxaa_descriptors() {
-    // Sampler
-    vk::SamplerCreateInfo sampler_info{
-        .magFilter = vk::Filter::eLinear,
-        .minFilter = vk::Filter::eLinear,
-        .mipmapMode = vk::SamplerMipmapMode::eLinear,
-        .addressModeU = vk::SamplerAddressMode::eClampToEdge,
-        .addressModeV = vk::SamplerAddressMode::eClampToEdge,
-        .addressModeW = vk::SamplerAddressMode::eClampToEdge,
-    };
-    fxaa_sampler_ = vk::raii::Sampler{device_, sampler_info};
-
-    // Descriptor set layout
-    vk::DescriptorSetLayoutBinding binding{
-        .binding = 0,
-        .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-        .descriptorCount = 1,
-        .stageFlags = vk::ShaderStageFlagBits::eFragment,
-    };
-
-    vk::DescriptorSetLayoutCreateInfo layout_info{
-        .bindingCount = 1,
-        .pBindings = &binding,
-    };
-    fxaa_descriptor_set_layout_ = vk::raii::DescriptorSetLayout{device_, layout_info};
-
-    // Pipeline layout
-    vk::PipelineLayoutCreateInfo pl_layout_info{
-        .setLayoutCount = 1,
-        .pSetLayouts = &*fxaa_descriptor_set_layout_,
-    };
-    fxaa_pipeline_layout_ = vk::raii::PipelineLayout{device_, pl_layout_info};
-
-    // Descriptor pool
-    vk::DescriptorPoolSize pool_size{
-        .type = vk::DescriptorType::eCombinedImageSampler,
-        .descriptorCount = 1,
-    };
-
-    vk::DescriptorPoolCreateInfo pool_info{
-        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        .maxSets = 1,
-        .poolSizeCount = 1,
-        .pPoolSizes = &pool_size,
-    };
-    fxaa_descriptor_pool_ = vk::raii::DescriptorPool{device_, pool_info};
-
-    // Allocate descriptor set
-    vk::DescriptorSetAllocateInfo alloc_info{
-        .descriptorPool = *fxaa_descriptor_pool_,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &*fxaa_descriptor_set_layout_,
-    };
-    auto sets = device_.allocateDescriptorSets(alloc_info);
-    fxaa_descriptor_set_ = std::move(sets[0]);
-
-    // Write initial descriptor
-    update_fxaa_descriptor();
-
-    spdlog::info("FXAA descriptors created");
-}
-
-void Engine::update_fxaa_descriptor() {
-    vk::DescriptorImageInfo image_info{
-        .sampler = *fxaa_sampler_,
-        .imageView = *offscreen_image_view_,
-        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-    };
-
-    vk::WriteDescriptorSet write{
-        .dstSet = *fxaa_descriptor_set_,
-        .dstBinding = 0,
-        .dstArrayElement = 0,
-        .descriptorCount = 1,
-        .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-        .pImageInfo = &image_info,
-    };
-
-    device_.updateDescriptorSets(write, {});
-}
-
-// ---------------------------------------------------------------------------
-// FXAA pipeline
-// ---------------------------------------------------------------------------
-
-void Engine::create_fxaa_pipeline() {
-    // Create shader modules from embedded SPIR-V
-    vk::ShaderModuleCreateInfo vert_info{
-        .codeSize = shaders::fullscreen_vert.size() * sizeof(uint32_t),
-        .pCode = shaders::fullscreen_vert.data(),
-    };
-    vk::raii::ShaderModule vert_module{device_, vert_info};
-
-    vk::ShaderModuleCreateInfo frag_info{
-        .codeSize = shaders::fxaa_frag.size() * sizeof(uint32_t),
-        .pCode = shaders::fxaa_frag.data(),
-    };
-    vk::raii::ShaderModule frag_module{device_, frag_info};
-
-    std::array<vk::PipelineShaderStageCreateInfo, 2> shader_stages = {{
-        {.stage = vk::ShaderStageFlagBits::eVertex,   .module = *vert_module, .pName = "main"},
-        {.stage = vk::ShaderStageFlagBits::eFragment, .module = *frag_module, .pName = "main"},
-    }};
-
-    // Empty vertex input (fullscreen triangle generated in vertex shader)
-    vk::PipelineVertexInputStateCreateInfo vertex_input{};
-
-    vk::PipelineInputAssemblyStateCreateInfo input_assembly{
-        .topology = vk::PrimitiveTopology::eTriangleList,
-        .primitiveRestartEnable = VK_FALSE,
-    };
-
-    // Dynamic viewport and scissor
-    std::array<vk::DynamicState, 2> dynamic_states = {
-        vk::DynamicState::eViewport,
-        vk::DynamicState::eScissor,
-    };
-    vk::PipelineDynamicStateCreateInfo dynamic_state{
-        .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
-        .pDynamicStates = dynamic_states.data(),
-    };
-
-    vk::PipelineViewportStateCreateInfo viewport_state{
-        .viewportCount = 1,
-        .scissorCount = 1,
-    };
-
-    vk::PipelineRasterizationStateCreateInfo rasterizer{
-        .depthClampEnable = VK_FALSE,
-        .rasterizerDiscardEnable = VK_FALSE,
-        .polygonMode = vk::PolygonMode::eFill,
-        .cullMode = vk::CullModeFlagBits::eNone,
-        .frontFace = vk::FrontFace::eClockwise,
-        .depthBiasEnable = VK_FALSE,
-        .depthBiasConstantFactor = 0.0f,
-        .depthBiasClamp = 0.0f,
-        .depthBiasSlopeFactor = 0.0f,
-        .lineWidth = 1.0f,
-    };
-
-    vk::PipelineMultisampleStateCreateInfo multisampling{
-        .rasterizationSamples = vk::SampleCountFlagBits::e1,
-        .sampleShadingEnable = VK_FALSE,
-    };
-
-    vk::PipelineDepthStencilStateCreateInfo depth_stencil{
-        .depthTestEnable = VK_FALSE,
-        .depthWriteEnable = VK_FALSE,
-        .depthCompareOp = vk::CompareOp::eLessOrEqual,
-        .depthBoundsTestEnable = VK_FALSE,
-        .stencilTestEnable = VK_FALSE,
-    };
-
-    vk::PipelineColorBlendAttachmentState color_blend_attachment{
-        .blendEnable = VK_FALSE,
-        .srcColorBlendFactor = vk::BlendFactor::eOne,
-        .dstColorBlendFactor = vk::BlendFactor::eZero,
-        .colorBlendOp = vk::BlendOp::eAdd,
-        .srcAlphaBlendFactor = vk::BlendFactor::eOne,
-        .dstAlphaBlendFactor = vk::BlendFactor::eZero,
-        .alphaBlendOp = vk::BlendOp::eAdd,
-        .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-        vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
-    };
-
-    vk::PipelineColorBlendStateCreateInfo color_blending{
-        .logicOpEnable = VK_FALSE,
-        .logicOp = vk::LogicOp::eCopy,
-        .attachmentCount = 1,
-        .pAttachments = &color_blend_attachment,
-        .blendConstants = {{0.0f, 0.0f, 0.0f, 0.0f}},
-    };
-
-    vk::GraphicsPipelineCreateInfo pipeline_info{
-        .stageCount = static_cast<uint32_t>(shader_stages.size()),
-        .pStages = shader_stages.data(),
-        .pVertexInputState = &vertex_input,
-        .pInputAssemblyState = &input_assembly,
-        .pViewportState = &viewport_state,
-        .pRasterizationState = &rasterizer,
-        .pMultisampleState = &multisampling,
-        .pDepthStencilState = &depth_stencil,
-        .pColorBlendState = &color_blending,
-        .pDynamicState = &dynamic_state,
-        .layout = *fxaa_pipeline_layout_,
-        .renderPass = *fxaa_render_pass_,
-        .subpass = 0,
-    };
-
-    fxaa_pipeline_ = vk::raii::Pipeline{device_, nullptr, pipeline_info};
-    spdlog::info("FXAA pipeline created");
-}
 
 // ---------------------------------------------------------------------------
 // Command pool & buffers
@@ -1114,138 +819,6 @@ void Engine::create_sync_objects() {
 }
 
 // ---------------------------------------------------------------------------
-// ImGui
-// ---------------------------------------------------------------------------
-
-void Engine::create_imgui_render_pass() {
-    vk::AttachmentDescription color_attachment{
-        .format = surface_format_.format,
-        .samples = vk::SampleCountFlagBits::e1,
-        .loadOp = vk::AttachmentLoadOp::eLoad,
-        .storeOp = vk::AttachmentStoreOp::eStore,
-        .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
-        .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
-        .initialLayout = vk::ImageLayout::eColorAttachmentOptimal,
-        .finalLayout = vk::ImageLayout::ePresentSrcKHR,
-    };
-
-    vk::AttachmentReference color_ref{.attachment = 0, .layout = vk::ImageLayout::eColorAttachmentOptimal};
-
-    vk::SubpassDescription subpass{
-        .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &color_ref,
-    };
-
-    vk::SubpassDependency dependency{
-        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
-        .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        .dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-        .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-    };
-
-    vk::RenderPassCreateInfo create_info{
-        .attachmentCount = 1,
-        .pAttachments = &color_attachment,
-        .subpassCount = 1,
-        .pSubpasses = &subpass,
-        .dependencyCount = 1,
-        .pDependencies = &dependency,
-    };
-
-    imgui_render_pass_ = vk::raii::RenderPass{device_, create_info};
-    spdlog::info("ImGui render pass created");
-}
-
-void Engine::create_imgui_framebuffers() {
-    imgui_framebuffers_.clear();
-    for (const auto& image_view : swapchain_image_views_) {
-        vk::ImageView attachment = *image_view;
-
-        vk::FramebufferCreateInfo create_info{
-            .renderPass = *imgui_render_pass_,
-            .attachmentCount = 1,
-            .pAttachments = &attachment,
-            .width = swapchain_extent_.width,
-            .height = swapchain_extent_.height,
-            .layers = 1,
-        };
-
-        imgui_framebuffers_.emplace_back(device_, create_info);
-    }
-}
-
-void Engine::init_imgui() {
-    // Create a dedicated descriptor pool for ImGui
-    std::array<vk::DescriptorPoolSize, 1> pool_sizes = {{
-        {.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = 1},
-    }};
-
-    vk::DescriptorPoolCreateInfo pool_info{
-        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        .maxSets = 1,
-        .poolSizeCount = static_cast<uint32_t>(pool_sizes.size()),
-        .pPoolSizes = pool_sizes.data(),
-    };
-    imgui_descriptor_pool_ = vk::raii::DescriptorPool{device_, pool_info};
-
-    // Initialize ImGui context
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-    ImGui::StyleColorsDark();
-
-    // Initialize SDL3 backend
-    ImGui_ImplSDL3_InitForVulkan(window_);
-
-    // Initialize Vulkan backend
-    ImGui_ImplVulkan_InitInfo init_info{};
-    init_info.ApiVersion = VK_API_VERSION_1_3;
-    init_info.Instance = *instance_;
-    init_info.PhysicalDevice = *physical_device_;
-    init_info.Device = *device_;
-    init_info.QueueFamily = graphics_family_index_;
-    init_info.Queue = *graphics_queue_;
-    init_info.DescriptorPool = *imgui_descriptor_pool_;
-    init_info.PipelineInfoMain.RenderPass = *imgui_render_pass_;
-    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init_info.MinImageCount = MAX_FRAMES_IN_FLIGHT;
-    init_info.ImageCount = static_cast<uint32_t>(swapchain_images_.size());
-
-    ImGui_ImplVulkan_Init(&init_info);
-
-    imgui_initialized_ = true;
-    spdlog::info("ImGui initialized");
-}
-
-void Engine::shutdown_imgui() {
-    if (!imgui_initialized_) return;
-
-    ImGui_ImplVulkan_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-    imgui_initialized_ = false;
-}
-
-void Engine::imgui_begin() {
-    if (!imgui_initialized_) return;
-
-    ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
-}
-
-void Engine::imgui_end() {
-    if (!imgui_initialized_) return;
-
-    ImGui::Render();
-}
-
-// ---------------------------------------------------------------------------
 // Swapchain recreation (window resize)
 // ---------------------------------------------------------------------------
 
@@ -1261,8 +834,6 @@ void Engine::recreate_swapchain() {
     device_.waitIdle();
 
     // Destroy extent-dependent resources in reverse creation order
-    imgui_framebuffers_.clear();
-    fxaa_framebuffers_.clear();
     offscreen_framebuffer_ = vk::raii::Framebuffer{nullptr};
     depth_image_view_ = vk::raii::ImageView{nullptr};
     depth_image_ = VmaImage{};
@@ -1274,9 +845,9 @@ void Engine::recreate_swapchain() {
     create_depth_resources();
     create_offscreen_target();
     create_offscreen_framebuffer();
-    create_fxaa_framebuffers();
-    create_imgui_framebuffers();
-    update_fxaa_descriptor();
+    fxaa_pass_.recreate(device_, swapchain_extent_,
+                        swapchain_image_views_, offscreen_image_view_);
+    imgui_pass_.recreate(device_, swapchain_extent_, swapchain_image_views_);
     current_frame_ = 0;
 
     spdlog::info("Swapchain recreated ({}x{})", swapchain_extent_.width, swapchain_extent_.height);
