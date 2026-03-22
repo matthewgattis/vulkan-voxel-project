@@ -16,30 +16,39 @@ public:
         const auto& device = engine.device();
 
         // Descriptor set layout
-        vk::DescriptorSetLayoutBinding binding(
-            0,
-            vk::DescriptorType::eUniformBuffer,
-            1,
-            stages
-        );
-        vk::DescriptorSetLayoutCreateInfo layout_info({}, 1, &binding);
+        vk::DescriptorSetLayoutBinding binding{
+            .binding = 0,
+            .descriptorType = vk::DescriptorType::eUniformBuffer,
+            .descriptorCount = 1,
+            .stageFlags = stages,
+        };
+        vk::DescriptorSetLayoutCreateInfo layout_info{
+            .flags = {},
+            .bindingCount = 1,
+            .pBindings = &binding,
+        };
         ub.layout_ = vk::raii::DescriptorSetLayout(device, layout_info);
 
         // Descriptor pool
-        vk::DescriptorPoolSize pool_size(
-            vk::DescriptorType::eUniformBuffer,
-            MAX_FRAMES_IN_FLIGHT
-        );
-        vk::DescriptorPoolCreateInfo pool_info({}, MAX_FRAMES_IN_FLIGHT, 1, &pool_size);
+        vk::DescriptorPoolSize pool_size{
+            .type = vk::DescriptorType::eUniformBuffer,
+            .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+        };
+        vk::DescriptorPoolCreateInfo pool_info{
+            .flags = {},
+            .maxSets = MAX_FRAMES_IN_FLIGHT,
+            .poolSizeCount = 1,
+            .pPoolSizes = &pool_size,
+        };
         ub.pool_ = vk::raii::DescriptorPool(device, pool_info);
 
         // Allocate descriptor sets
         std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *ub.layout_);
-        vk::DescriptorSetAllocateInfo alloc_info(
-            *ub.pool_,
-            static_cast<uint32_t>(layouts.size()),
-            layouts.data()
-        );
+        vk::DescriptorSetAllocateInfo alloc_info{
+            .descriptorPool = *ub.pool_,
+            .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+            .pSetLayouts = layouts.data(),
+        };
         ub.sets_ = device.allocateDescriptorSets(alloc_info);
 
         // Create buffers, persistently map, write descriptor sets
@@ -60,16 +69,19 @@ public:
             // retrieve the pointer without incrementing the map count.
             ub.mapped_[i] = ub.buffers_[i].mapped_data();
 
-            vk::DescriptorBufferInfo buffer_info(
-                ub.buffers_[i].handle(), 0, sizeof(T)
-            );
-            vk::WriteDescriptorSet write(
-                *ub.sets_[i],
-                0, 0, 1,
-                vk::DescriptorType::eUniformBuffer,
-                nullptr,
-                &buffer_info
-            );
+            vk::DescriptorBufferInfo buffer_info{
+                .buffer = ub.buffers_[i].handle(),
+                .offset = 0,
+                .range = sizeof(T),
+            };
+            vk::WriteDescriptorSet write{
+                .dstSet = *ub.sets_[i],
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eUniformBuffer,
+                .pBufferInfo = &buffer_info,
+            };
             device.updateDescriptorSets(write, nullptr);
         }
 

@@ -10,16 +10,16 @@ PipelineBuilder::PipelineBuilder(const vk::raii::Device& device,
                                  std::span<const uint32_t> frag_spirv)
     : device_(device) {
     vk::ShaderModuleCreateInfo vert_info{
-        {},
-        vert_spirv.size_bytes(),
-        vert_spirv.data(),
+        .flags    = {},
+        .codeSize = vert_spirv.size_bytes(),
+        .pCode    = vert_spirv.data(),
     };
     vert_module_ = vk::raii::ShaderModule{device_, vert_info};
 
     vk::ShaderModuleCreateInfo frag_info{
-        {},
-        frag_spirv.size_bytes(),
-        frag_spirv.data(),
+        .flags    = {},
+        .codeSize = frag_spirv.size_bytes(),
+        .pCode    = frag_spirv.data(),
     };
     frag_module_ = vk::raii::ShaderModule{device_, frag_info};
 }
@@ -59,20 +59,22 @@ vk::raii::Pipeline PipelineBuilder::build(
     const vk::raii::PipelineLayout& layout) {
 
     std::array<vk::PipelineShaderStageCreateInfo, 2> shader_stages = {{
-        {{}, vk::ShaderStageFlagBits::eVertex,   *vert_module_, "main"},
-        {{}, vk::ShaderStageFlagBits::eFragment, *frag_module_, "main"},
+        {.flags = {}, .stage = vk::ShaderStageFlagBits::eVertex,   .module = *vert_module_, .pName = "main"},
+        {.flags = {}, .stage = vk::ShaderStageFlagBits::eFragment, .module = *frag_module_, .pName = "main"},
     }};
 
     vk::PipelineVertexInputStateCreateInfo vertex_input_info{
-        {},
-        bindings_,
-        attributes_,
+        .flags                           = {},
+        .vertexBindingDescriptionCount   = static_cast<uint32_t>(bindings_.size()),
+        .pVertexBindingDescriptions      = bindings_.data(),
+        .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes_.size()),
+        .pVertexAttributeDescriptions    = attributes_.data(),
     };
 
     vk::PipelineInputAssemblyStateCreateInfo input_assembly{
-        {},
-        topology_,
-        VK_FALSE,
+        .flags                  = {},
+        .topology               = topology_,
+        .primitiveRestartEnable = VK_FALSE,
     };
 
     // Dynamic viewport and scissor — set at draw time via begin_frame()
@@ -81,78 +83,85 @@ vk::raii::Pipeline PipelineBuilder::build(
         vk::DynamicState::eScissor,
     };
     vk::PipelineDynamicStateCreateInfo dynamic_state{
-        {},
-        dynamic_states,
+        .flags             = {},
+        .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
+        .pDynamicStates    = dynamic_states.data(),
     };
 
     vk::PipelineViewportStateCreateInfo viewport_state{
-        {},
-        1, nullptr,
-        1, nullptr,
+        .flags         = {},
+        .viewportCount = 1,
+        .pViewports    = nullptr,
+        .scissorCount  = 1,
+        .pScissors     = nullptr,
     };
 
     vk::PipelineRasterizationStateCreateInfo rasterizer{
-        {},
-        VK_FALSE,           // depthClampEnable
-        VK_FALSE,           // rasterizerDiscardEnable
-        polygon_mode_,
-        cull_mode_,
-        front_face_,
-        VK_FALSE,           // depthBiasEnable
-        0.0f, 0.0f, 0.0f,  // depthBias*
-        1.0f,               // lineWidth
+        .flags                   = {},
+        .depthClampEnable        = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode             = polygon_mode_,
+        .cullMode                = cull_mode_,
+        .frontFace               = front_face_,
+        .depthBiasEnable         = VK_FALSE,
+        .depthBiasConstantFactor = 0.0f,
+        .depthBiasClamp          = 0.0f,
+        .depthBiasSlopeFactor    = 0.0f,
+        .lineWidth               = 1.0f,
     };
 
     vk::PipelineMultisampleStateCreateInfo multisampling{
-        {},
-        vk::SampleCountFlagBits::e1,
-        VK_FALSE,
+        .flags                = {},
+        .rasterizationSamples = vk::SampleCountFlagBits::e1,
+        .sampleShadingEnable  = VK_FALSE,
     };
 
     vk::PipelineDepthStencilStateCreateInfo depth_stencil{
-        {},
-        depth_test_ ? VK_TRUE : VK_FALSE,  // depthTestEnable
-        depth_test_ ? VK_TRUE : VK_FALSE,  // depthWriteEnable
-        depth_op_,
-        VK_FALSE,   // depthBoundsTestEnable
-        VK_FALSE,   // stencilTestEnable
+        .flags                 = {},
+        .depthTestEnable       = depth_test_ ? VK_TRUE : VK_FALSE,
+        .depthWriteEnable      = depth_test_ ? VK_TRUE : VK_FALSE,
+        .depthCompareOp        = depth_op_,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable     = VK_FALSE,
     };
 
     vk::PipelineColorBlendAttachmentState color_blend_attachment{
-        VK_FALSE,
-        vk::BlendFactor::eOne,
-        vk::BlendFactor::eZero,
-        vk::BlendOp::eAdd,
-        vk::BlendFactor::eOne,
-        vk::BlendFactor::eZero,
-        vk::BlendOp::eAdd,
-        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-        vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+        .blendEnable         = VK_FALSE,
+        .srcColorBlendFactor = vk::BlendFactor::eOne,
+        .dstColorBlendFactor = vk::BlendFactor::eZero,
+        .colorBlendOp        = vk::BlendOp::eAdd,
+        .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+        .dstAlphaBlendFactor = vk::BlendFactor::eZero,
+        .alphaBlendOp        = vk::BlendOp::eAdd,
+        .colorWriteMask      = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
     };
 
     vk::PipelineColorBlendStateCreateInfo color_blending{
-        {},
-        VK_FALSE,
-        vk::LogicOp::eCopy,
-        1, &color_blend_attachment,
-        {{0.0f, 0.0f, 0.0f, 0.0f}},
+        .flags           = {},
+        .logicOpEnable   = VK_FALSE,
+        .logicOp         = vk::LogicOp::eCopy,
+        .attachmentCount = 1,
+        .pAttachments    = &color_blend_attachment,
+        .blendConstants  = {{0.0f, 0.0f, 0.0f, 0.0f}},
     };
 
     vk::GraphicsPipelineCreateInfo pipeline_info{
-        {},
-        shader_stages,
-        &vertex_input_info,
-        &input_assembly,
-        nullptr,            // tessellation
-        &viewport_state,
-        &rasterizer,
-        &multisampling,
-        &depth_stencil,
-        &color_blending,
-        &dynamic_state,
-        *layout,
-        *render_pass,
-        0,
+        .flags               = {},
+        .stageCount          = static_cast<uint32_t>(shader_stages.size()),
+        .pStages             = shader_stages.data(),
+        .pVertexInputState   = &vertex_input_info,
+        .pInputAssemblyState = &input_assembly,
+        .pTessellationState  = nullptr,
+        .pViewportState      = &viewport_state,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState   = &multisampling,
+        .pDepthStencilState  = &depth_stencil,
+        .pColorBlendState    = &color_blending,
+        .pDynamicState       = &dynamic_state,
+        .layout              = *layout,
+        .renderPass          = *render_pass,
+        .subpass             = 0,
     };
 
     return vk::raii::Pipeline{device_, nullptr, pipeline_info};
