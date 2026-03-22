@@ -4,6 +4,7 @@ target_sources(steel PRIVATE
     src/engine.cpp
     src/pipeline.cpp
     src/buffer.cpp
+    src/vma_impl.cpp
 )
 
 target_include_directories(steel PUBLIC
@@ -15,6 +16,8 @@ target_link_libraries(steel PUBLIC
     glm::glm
     SDL3::SDL3
     spdlog::spdlog
+    imgui::imgui
+    GPUOpen::VulkanMemoryAllocator
 )
 
 # --- Shader compilation (FXAA post-process) ---

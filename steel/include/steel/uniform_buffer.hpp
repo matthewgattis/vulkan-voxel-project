@@ -14,7 +14,6 @@ public:
     static UniformBuffer create(const Engine& engine, vk::ShaderStageFlags stages) {
         UniformBuffer ub;
         const auto& device = engine.device();
-        const auto& physical_device = engine.physical_device();
 
         // Descriptor set layout
         vk::DescriptorSetLayoutBinding binding(
@@ -49,13 +48,17 @@ public:
 
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
             ub.buffers_.push_back(Buffer::create(
-                device, physical_device,
+                engine.allocator(),
                 sizeof(T),
                 vk::BufferUsageFlagBits::eUniformBuffer,
-                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+                VMA_MEMORY_USAGE_AUTO,
+                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                VMA_ALLOCATION_CREATE_MAPPED_BIT
             ));
 
-            ub.mapped_[i] = ub.buffers_[i].map();
+            // VMA_ALLOCATION_CREATE_MAPPED_BIT keeps it persistently mapped;
+            // retrieve the pointer without incrementing the map count.
+            ub.mapped_[i] = ub.buffers_[i].mapped_data();
 
             vk::DescriptorBufferInfo buffer_info(
                 ub.buffers_[i].handle(), 0, sizeof(T)

@@ -1,5 +1,6 @@
 #include <voxel/application.hpp>
 
+#include <imgui.h>
 #include <spdlog/spdlog.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -48,6 +49,32 @@ Application::~Application() {
 void Application::run() {
     while (engine_.poll_events()) {
         camera_controller_.update(engine_, world_, camera_entity_);
+
+        // Update FPS counter once per second
+        fps_timer_ += engine_.delta_time();
+        fps_frame_count_++;
+        if (fps_timer_ >= 1.0f) {
+            fps_display_ = static_cast<float>(fps_frame_count_) / fps_timer_;
+            fps_ms_display_ = fps_timer_ / static_cast<float>(fps_frame_count_) * 1000.0f;
+            fps_frame_count_ = 0;
+            fps_timer_ = 0.0f;
+        }
+
+        // ImGui frame
+        engine_.imgui_begin();
+        if (engine_.imgui_enabled()) {
+            ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowBgAlpha(0.5f);
+            ImGui::Begin("Debug", nullptr,
+                ImGuiWindowFlags_NoDecoration |
+                ImGuiWindowFlags_AlwaysAutoResize |
+                ImGuiWindowFlags_NoFocusOnAppearing |
+                ImGuiWindowFlags_NoNav);
+            ImGui::Text("%.1f FPS (%.2f ms)", fps_display_, fps_ms_display_);
+            ImGui::End();
+        }
+        engine_.imgui_end();
+
         renderer_.render_frame(world_);
     }
     engine_.wait_idle();

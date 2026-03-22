@@ -17,7 +17,7 @@ Geometry Geometry::create(steel::Engine& engine, const Mesh& mesh) {
 
     auto vertex_buffer = steel::Buffer::create_vertex_buffer(
         engine.device(),
-        engine.physical_device(),
+        engine.allocator(),
         engine.command_pool(),
         engine.graphics_queue(),
         std::as_bytes(vertices));
@@ -26,7 +26,7 @@ Geometry Geometry::create(steel::Engine& engine, const Mesh& mesh) {
     if (!indices.empty()) {
         index_buffer = steel::Buffer::create_index_buffer(
             engine.device(),
-            engine.physical_device(),
+            engine.allocator(),
             engine.command_pool(),
             engine.graphics_queue(),
             std::as_bytes(indices));

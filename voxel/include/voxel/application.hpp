@@ -35,6 +35,12 @@ private:
     Terrain terrain_;
     glass::Entity camera_entity_;
     CameraController camera_controller_;
+
+    // FPS display (updated once per second)
+    float fps_display_ = 0.0f;
+    float fps_ms_display_ = 0.0f;
+    float fps_timer_ = 0.0f;
+    int fps_frame_count_ = 0;
 };
 
 } // namespace voxel

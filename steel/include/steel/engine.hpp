@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -33,6 +34,12 @@ public:
 
     void wait_idle();
 
+    // ImGui
+    void imgui_begin();
+    void imgui_end();
+    bool imgui_enabled() const { return imgui_enabled_; }
+    void set_imgui_enabled(bool enabled) { imgui_enabled_ = enabled; }
+
     // Accessors
     const vk::raii::Device&     device()      const { return device_; }
     const vk::raii::RenderPass& render_pass() const { return render_pass_; }
@@ -44,6 +51,7 @@ public:
     const vk::raii::CommandPool& command_pool()  const { return command_pool_; }
     uint32_t                    graphics_family() const { return graphics_family_index_; }
     uint32_t                    current_frame()   const { return current_frame_; }
+    VmaAllocator                allocator()       const { return allocator_; }
 
     // Input state
     const bool* keyboard_state() const;
@@ -56,6 +64,7 @@ private:
     void create_surface();
     void pick_physical_device();
     void create_device();
+    void create_allocator();
     void create_swapchain();
     void create_depth_resources();
     void create_offscreen_target();
@@ -68,14 +77,42 @@ private:
     void create_fxaa_descriptors();
     void create_fxaa_pipeline();
     void update_fxaa_descriptor();
+    void create_imgui_render_pass();
+    void create_imgui_framebuffers();
+    void init_imgui();
+    void shutdown_imgui();
     void recreate_swapchain();
 
     bool is_device_suitable(const vk::raii::PhysicalDevice& dev) const;
     vk::Format find_depth_format(const vk::raii::PhysicalDevice& dev) const;
-    uint32_t find_memory_type(uint32_t type_filter, vk::MemoryPropertyFlags properties) const;
 
     // SDL
     SDL_Window* window_ = nullptr;
+
+    // VMA image — wraps VkImage + VmaAllocation with RAII cleanup
+    struct VmaImage {
+        VmaAllocator  allocator  = VK_NULL_HANDLE;
+        VkImage       image      = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+
+        VmaImage() = default;
+        ~VmaImage() { destroy(); }
+        VmaImage(VmaImage&& o) noexcept
+            : allocator{o.allocator}, image{o.image}, allocation{o.allocation}
+        { o.image = VK_NULL_HANDLE; o.allocation = VK_NULL_HANDLE; }
+        VmaImage& operator=(VmaImage&& o) noexcept {
+            if (this != &o) {
+                destroy();
+                allocator = o.allocator; image = o.image; allocation = o.allocation;
+                o.image = VK_NULL_HANDLE; o.allocation = VK_NULL_HANDLE;
+            }
+            return *this;
+        }
+        VmaImage(const VmaImage&) = delete;
+        VmaImage& operator=(const VmaImage&) = delete;
+    private:
+        void destroy() { if (image) { vmaDestroyImage(allocator, image, allocation); image = VK_NULL_HANDLE; } }
+    };
 
     // Vulkan core (declaration order matters for destruction)
     vk::raii::Context       context_;
@@ -83,6 +120,7 @@ private:
     vk::raii::SurfaceKHR    surface_        {nullptr};
     vk::raii::PhysicalDevice physical_device_{nullptr};
     vk::raii::Device        device_         {nullptr};
+    VmaAllocator            allocator_      = VK_NULL_HANDLE;
     vk::raii::Queue         graphics_queue_ {nullptr};
     vk::raii::Queue         present_queue_  {nullptr};
 
@@ -98,13 +136,11 @@ private:
 
     // Depth buffer
     vk::Format                   depth_format_ = vk::Format::eD32Sfloat;
-    vk::raii::Image              depth_image_      {nullptr};
-    vk::raii::DeviceMemory       depth_memory_     {nullptr};
+    VmaImage                     depth_image_;
     vk::raii::ImageView          depth_image_view_ {nullptr};
 
     // Offscreen render target (scene renders here, FXAA reads from it)
-    vk::raii::Image              offscreen_image_      {nullptr};
-    vk::raii::DeviceMemory       offscreen_memory_     {nullptr};
+    VmaImage                     offscreen_image_;
     vk::raii::ImageView          offscreen_image_view_ {nullptr};
 
     // Scene render pass & offscreen framebuffer
@@ -122,6 +158,13 @@ private:
     vk::raii::Sampler                   fxaa_sampler_ {nullptr};
     vk::raii::PipelineLayout            fxaa_pipeline_layout_ {nullptr};
     vk::raii::Pipeline                  fxaa_pipeline_ {nullptr};
+
+    // ImGui render pass & per-swapchain framebuffers
+    vk::raii::RenderPass                imgui_render_pass_ {nullptr};
+    std::vector<vk::raii::Framebuffer>  imgui_framebuffers_;
+    vk::raii::DescriptorPool            imgui_descriptor_pool_ {nullptr};
+    bool                                imgui_initialized_ = false;
+    bool                                imgui_enabled_ = true;
 
     // Commands
     vk::raii::CommandPool                command_pool_ {nullptr};

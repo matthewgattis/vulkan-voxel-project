@@ -1,6 +1,10 @@
 #include <steel/engine.hpp>
 #include "steel/fxaa_shaders.hpp"
 
+#include <imgui.h>
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_vulkan.h>
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -61,6 +65,7 @@ Engine::Engine(std::string_view title, uint32_t width, uint32_t height) {
     pick_physical_device();
     depth_format_ = find_depth_format(physical_device_);
     create_device();
+    create_allocator();
     create_swapchain();
     create_depth_resources();
     create_offscreen_target();
@@ -72,6 +77,9 @@ Engine::Engine(std::string_view title, uint32_t width, uint32_t height) {
     create_sync_objects();
     create_fxaa_descriptors();
     create_fxaa_pipeline();
+    create_imgui_render_pass();
+    create_imgui_framebuffers();
+    init_imgui();
 
     last_frame_time_ = SDL_GetTicks();
 
@@ -80,6 +88,17 @@ Engine::Engine(std::string_view title, uint32_t width, uint32_t height) {
 
 Engine::~Engine() {
     wait_idle();
+    shutdown_imgui();
+
+    // Destroy VMA-managed images before allocator
+    depth_image_ = VmaImage{};
+    offscreen_image_ = VmaImage{};
+
+    if (allocator_ != VK_NULL_HANDLE) {
+        vmaDestroyAllocator(allocator_);
+        allocator_ = VK_NULL_HANDLE;
+    }
+
     if (window_) {
         SDL_DestroyWindow(window_);
     }
@@ -114,6 +133,11 @@ bool Engine::poll_events() {
 
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        // Let ImGui process events when mouse is not captured
+        if (imgui_initialized_ && !mouse_captured_) {
+            ImGui_ImplSDL3_ProcessEvent(&event);
+        }
+
         if (event.type == SDL_EVENT_QUIT) {
             return false;
         }
@@ -121,10 +145,20 @@ bool Engine::poll_events() {
             event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
             framebuffer_resized_ = true;
         }
+
+        // Toggle ImGui with F3
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_F3 &&
+            !event.key.repeat) {
+            imgui_enabled_ = !imgui_enabled_;
+        }
+
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
-            mouse_captured_ = true;
-            mouse_capture_first_frame_ = true;
-            SDL_SetWindowRelativeMouseMode(window_, true);
+            // Don't capture mouse if ImGui wants it
+            if (!imgui_enabled_ || !ImGui::GetIO().WantCaptureMouse) {
+                mouse_captured_ = true;
+                mouse_capture_first_frame_ = true;
+                SDL_SetWindowRelativeMouseMode(window_, true);
+            }
         }
         if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
             mouse_captured_ = false;
@@ -238,6 +272,20 @@ void Engine::end_frame() {
     cmd.draw(3, 1, 0, 0);
 
     cmd.endRenderPass();
+
+    // ImGui render pass — always runs for layout transition to ePresentSrcKHR.
+    // When ImGui is disabled, the draw data is empty so this is essentially free.
+    if (imgui_initialized_) {
+        vk::RenderPassBeginInfo imgui_rp_info{
+            *imgui_render_pass_,
+            *imgui_framebuffers_[current_image_index_],
+            vk::Rect2D{{0, 0}, swapchain_extent_},
+        };
+
+        cmd.beginRenderPass(imgui_rp_info, vk::SubpassContents::eInline);
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *cmd);
+        cmd.endRenderPass();
+    }
 
     cmd.end();
 
@@ -596,34 +644,33 @@ void Engine::create_swapchain() {
 // ---------------------------------------------------------------------------
 
 void Engine::create_depth_resources() {
-    vk::ImageCreateInfo image_info{
-        {},
-        vk::ImageType::e2D,
-        depth_format_,
-        {swapchain_extent_.width, swapchain_extent_.height, 1},
-        1, 1,
-        vk::SampleCountFlagBits::e1,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eDepthStencilAttachment,
-        vk::SharingMode::eExclusive,
-        {},
-        vk::ImageLayout::eUndefined,
-    };
+    VkImageCreateInfo image_info{};
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = static_cast<VkFormat>(depth_format_);
+    image_info.extent = {swapchain_extent_.width, swapchain_extent_.height, 1};
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    depth_image_ = vk::raii::Image{device_, image_info};
+    VmaAllocationCreateInfo alloc_info{};
+    alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-    auto mem_requirements = depth_image_.getMemoryRequirements();
-    vk::MemoryAllocateInfo alloc_info{
-        mem_requirements.size,
-        find_memory_type(mem_requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
-    };
-
-    depth_memory_ = vk::raii::DeviceMemory{device_, alloc_info};
-    depth_image_.bindMemory(*depth_memory_, 0);
+    depth_image_ = VmaImage{};
+    depth_image_.allocator = allocator_;
+    VkResult result = vmaCreateImage(allocator_, &image_info, &alloc_info,
+                                     &depth_image_.image, &depth_image_.allocation, nullptr);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("vmaCreateImage failed for depth buffer");
+    }
 
     vk::ImageViewCreateInfo view_info{
         {},
-        *depth_image_,
+        vk::Image{depth_image_.image},
         vk::ImageViewType::e2D,
         depth_format_,
         {},
@@ -639,34 +686,33 @@ void Engine::create_depth_resources() {
 // ---------------------------------------------------------------------------
 
 void Engine::create_offscreen_target() {
-    vk::ImageCreateInfo image_info{
-        {},
-        vk::ImageType::e2D,
-        surface_format_.format,
-        {swapchain_extent_.width, swapchain_extent_.height, 1},
-        1, 1,
-        vk::SampleCountFlagBits::e1,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
-        vk::SharingMode::eExclusive,
-        {},
-        vk::ImageLayout::eUndefined,
-    };
+    VkImageCreateInfo image_info{};
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = static_cast<VkFormat>(surface_format_.format);
+    image_info.extent = {swapchain_extent_.width, swapchain_extent_.height, 1};
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    offscreen_image_ = vk::raii::Image{device_, image_info};
+    VmaAllocationCreateInfo alloc_info{};
+    alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-    auto mem_requirements = offscreen_image_.getMemoryRequirements();
-    vk::MemoryAllocateInfo alloc_info{
-        mem_requirements.size,
-        find_memory_type(mem_requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
-    };
-
-    offscreen_memory_ = vk::raii::DeviceMemory{device_, alloc_info};
-    offscreen_image_.bindMemory(*offscreen_memory_, 0);
+    offscreen_image_ = VmaImage{};
+    offscreen_image_.allocator = allocator_;
+    VkResult result = vmaCreateImage(allocator_, &image_info, &alloc_info,
+                                     &offscreen_image_.image, &offscreen_image_.allocation, nullptr);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("vmaCreateImage failed for offscreen target");
+    }
 
     vk::ImageViewCreateInfo view_info{
         {},
-        *offscreen_image_,
+        vk::Image{offscreen_image_.image},
         vk::ImageViewType::e2D,
         surface_format_.format,
         {},
@@ -771,7 +817,7 @@ void Engine::create_fxaa_render_pass() {
         vk::AttachmentLoadOp::eDontCare,
         vk::AttachmentStoreOp::eDontCare,
         vk::ImageLayout::eUndefined,
-        vk::ImageLayout::ePresentSrcKHR,
+        vk::ImageLayout::eColorAttachmentOptimal,
     };
 
     vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
@@ -1071,6 +1117,137 @@ void Engine::create_sync_objects() {
 }
 
 // ---------------------------------------------------------------------------
+// ImGui
+// ---------------------------------------------------------------------------
+
+void Engine::create_imgui_render_pass() {
+    vk::AttachmentDescription color_attachment{
+        {},
+        surface_format_.format,
+        vk::SampleCountFlagBits::e1,
+        vk::AttachmentLoadOp::eLoad,
+        vk::AttachmentStoreOp::eStore,
+        vk::AttachmentLoadOp::eDontCare,
+        vk::AttachmentStoreOp::eDontCare,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        vk::ImageLayout::ePresentSrcKHR,
+    };
+
+    vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+
+    vk::SubpassDescription subpass{
+        {},
+        vk::PipelineBindPoint::eGraphics,
+        {},
+        color_ref,
+    };
+
+    vk::SubpassDependency dependency{
+        VK_SUBPASS_EXTERNAL, 0,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        vk::AccessFlagBits::eColorAttachmentWrite,
+        vk::AccessFlagBits::eColorAttachmentWrite,
+    };
+
+    vk::RenderPassCreateInfo create_info{
+        {},
+        1, &color_attachment,
+        1, &subpass,
+        1, &dependency,
+    };
+
+    imgui_render_pass_ = vk::raii::RenderPass{device_, create_info};
+    spdlog::info("ImGui render pass created");
+}
+
+void Engine::create_imgui_framebuffers() {
+    imgui_framebuffers_.clear();
+    for (const auto& image_view : swapchain_image_views_) {
+        vk::ImageView attachment = *image_view;
+
+        vk::FramebufferCreateInfo create_info{
+            {},
+            *imgui_render_pass_,
+            1, &attachment,
+            swapchain_extent_.width,
+            swapchain_extent_.height,
+            1,
+        };
+
+        imgui_framebuffers_.emplace_back(device_, create_info);
+    }
+}
+
+void Engine::init_imgui() {
+    // Create a dedicated descriptor pool for ImGui
+    std::array<vk::DescriptorPoolSize, 1> pool_sizes = {{
+        {vk::DescriptorType::eCombinedImageSampler, 1},
+    }};
+
+    vk::DescriptorPoolCreateInfo pool_info{
+        vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+        1,
+        pool_sizes,
+    };
+    imgui_descriptor_pool_ = vk::raii::DescriptorPool{device_, pool_info};
+
+    // Initialize ImGui context
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    ImGui::StyleColorsDark();
+
+    // Initialize SDL3 backend
+    ImGui_ImplSDL3_InitForVulkan(window_);
+
+    // Initialize Vulkan backend
+    ImGui_ImplVulkan_InitInfo init_info{};
+    init_info.ApiVersion = VK_API_VERSION_1_3;
+    init_info.Instance = *instance_;
+    init_info.PhysicalDevice = *physical_device_;
+    init_info.Device = *device_;
+    init_info.QueueFamily = graphics_family_index_;
+    init_info.Queue = *graphics_queue_;
+    init_info.DescriptorPool = *imgui_descriptor_pool_;
+    init_info.PipelineInfoMain.RenderPass = *imgui_render_pass_;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.MinImageCount = MAX_FRAMES_IN_FLIGHT;
+    init_info.ImageCount = static_cast<uint32_t>(swapchain_images_.size());
+
+    ImGui_ImplVulkan_Init(&init_info);
+
+    imgui_initialized_ = true;
+    spdlog::info("ImGui initialized");
+}
+
+void Engine::shutdown_imgui() {
+    if (!imgui_initialized_) return;
+
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    imgui_initialized_ = false;
+}
+
+void Engine::imgui_begin() {
+    if (!imgui_initialized_) return;
+
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+}
+
+void Engine::imgui_end() {
+    if (!imgui_initialized_) return;
+
+    ImGui::Render();
+}
+
+// ---------------------------------------------------------------------------
 // Swapchain recreation (window resize)
 // ---------------------------------------------------------------------------
 
@@ -1086,14 +1263,13 @@ void Engine::recreate_swapchain() {
     device_.waitIdle();
 
     // Destroy extent-dependent resources in reverse creation order
+    imgui_framebuffers_.clear();
     fxaa_framebuffers_.clear();
     offscreen_framebuffer_ = vk::raii::Framebuffer{nullptr};
     depth_image_view_ = vk::raii::ImageView{nullptr};
-    depth_memory_ = vk::raii::DeviceMemory{nullptr};
-    depth_image_ = vk::raii::Image{nullptr};
+    depth_image_ = VmaImage{};
     offscreen_image_view_ = vk::raii::ImageView{nullptr};
-    offscreen_memory_ = vk::raii::DeviceMemory{nullptr};
-    offscreen_image_ = vk::raii::Image{nullptr};
+    offscreen_image_ = VmaImage{};
     swapchain_image_views_.clear();
 
     create_swapchain();
@@ -1101,6 +1277,7 @@ void Engine::recreate_swapchain() {
     create_offscreen_target();
     create_offscreen_framebuffer();
     create_fxaa_framebuffers();
+    create_imgui_framebuffers();
     update_fxaa_descriptor();
     current_frame_ = 0;
 
@@ -1108,18 +1285,26 @@ void Engine::recreate_swapchain() {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// VMA allocator
 // ---------------------------------------------------------------------------
 
-uint32_t Engine::find_memory_type(uint32_t type_filter, vk::MemoryPropertyFlags properties) const {
-    auto mem_props = physical_device_.getMemoryProperties();
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
-        if ((type_filter & (1 << i)) &&
-            (mem_props.memoryTypes[i].propertyFlags & properties) == properties) {
-            return i;
-        }
+void Engine::create_allocator() {
+    VmaVulkanFunctions vma_funcs{};
+    vma_funcs.vkGetInstanceProcAddr = context_.getDispatcher()->vkGetInstanceProcAddr;
+    vma_funcs.vkGetDeviceProcAddr = instance_.getDispatcher()->vkGetDeviceProcAddr;
+
+    VmaAllocatorCreateInfo create_info{};
+    create_info.instance = *instance_;
+    create_info.physicalDevice = *physical_device_;
+    create_info.device = *device_;
+    create_info.pVulkanFunctions = &vma_funcs;
+    create_info.vulkanApiVersion = VK_API_VERSION_1_3;
+
+    VkResult result = vmaCreateAllocator(&create_info, &allocator_);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("vmaCreateAllocator failed");
     }
-    throw std::runtime_error("Failed to find suitable memory type");
+    spdlog::info("VMA allocator created");
 }
 
 } // namespace steel

@@ -5,31 +5,97 @@
 
 namespace steel {
 
+Buffer::~Buffer() {
+    if (buffer_ != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(allocator_, buffer_, allocation_);
+    }
+}
+
+Buffer::Buffer(Buffer&& other) noexcept
+    : allocator_{other.allocator_}
+    , buffer_{other.buffer_}
+    , allocation_{other.allocation_}
+    , size_{other.size_}
+{
+    other.buffer_ = VK_NULL_HANDLE;
+    other.allocation_ = VK_NULL_HANDLE;
+    other.size_ = 0;
+}
+
+Buffer& Buffer::operator=(Buffer&& other) noexcept {
+    if (this != &other) {
+        if (buffer_ != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(allocator_, buffer_, allocation_);
+        }
+        allocator_ = other.allocator_;
+        buffer_ = other.buffer_;
+        allocation_ = other.allocation_;
+        size_ = other.size_;
+        other.buffer_ = VK_NULL_HANDLE;
+        other.allocation_ = VK_NULL_HANDLE;
+        other.size_ = 0;
+    }
+    return *this;
+}
+
+Buffer Buffer::create(
+    VmaAllocator             allocator,
+    vk::DeviceSize           size,
+    vk::BufferUsageFlags     usage,
+    VmaMemoryUsage           memory_usage,
+    VmaAllocationCreateFlags flags) {
+
+    Buffer buf;
+    buf.allocator_ = allocator;
+    buf.size_ = size;
+
+    VkBufferCreateInfo buffer_info{};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = static_cast<VkDeviceSize>(size);
+    buffer_info.usage = static_cast<VkBufferUsageFlags>(usage);
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo alloc_info{};
+    alloc_info.usage = memory_usage;
+    alloc_info.flags = flags;
+
+    VkResult result = vmaCreateBuffer(
+        allocator, &buffer_info, &alloc_info,
+        &buf.buffer_, &buf.allocation_, nullptr);
+
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("vmaCreateBuffer failed");
+    }
+
+    return buf;
+}
+
 Buffer Buffer::create_vertex_buffer(
-    const vk::raii::Device&         device,
-    const vk::raii::PhysicalDevice& physical_device,
-    const vk::raii::CommandPool&    command_pool,
-    const vk::raii::Queue&          queue,
-    std::span<const std::byte>      data) {
+    const vk::raii::Device&      device,
+    VmaAllocator                 allocator,
+    const vk::raii::CommandPool& command_pool,
+    const vk::raii::Queue&       queue,
+    std::span<const std::byte>   data) {
 
-    vk::DeviceSize size = data.size();
+    auto size = static_cast<vk::DeviceSize>(data.size());
 
-    // Create staging buffer (host-visible)
+    // Staging buffer (host-visible, mapped)
     Buffer staging = create(
-        device, physical_device, size,
+        allocator, size,
         vk::BufferUsageFlagBits::eTransferSrc,
-        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        VMA_MEMORY_USAGE_AUTO,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+        VMA_ALLOCATION_CREATE_MAPPED_BIT);
 
-    // Map and copy data into staging buffer
-    void* mapped = staging.memory_.mapMemory(0, size);
-    std::memcpy(mapped, data.data(), size);
-    staging.memory_.unmapMemory();
+    void* mapped = staging.map();
+    std::memcpy(mapped, data.data(), data.size());
+    staging.unmap();
 
-    // Create device-local vertex buffer
+    // Device-local vertex buffer
     Buffer vertex_buf = create(
-        device, physical_device, size,
+        allocator, size,
         vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst,
-        vk::MemoryPropertyFlagBits::eDeviceLocal);
+        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
     // Copy via one-shot command buffer
     vk::CommandBufferAllocateInfo alloc_info{
@@ -41,7 +107,7 @@ Buffer Buffer::create_vertex_buffer(
     auto& cmd = cmd_buffers[0];
 
     cmd.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cmd.copyBuffer(*staging.buffer_, *vertex_buf.buffer_, vk::BufferCopy{0, 0, size});
+    cmd.copyBuffer(vk::Buffer{staging.buffer_}, vk::Buffer{vertex_buf.buffer_}, vk::BufferCopy{0, 0, size});
     cmd.end();
 
     vk::SubmitInfo submit_info{{}, {}, *cmd};
@@ -52,30 +118,31 @@ Buffer Buffer::create_vertex_buffer(
 }
 
 Buffer Buffer::create_index_buffer(
-    const vk::raii::Device&         device,
-    const vk::raii::PhysicalDevice& physical_device,
-    const vk::raii::CommandPool&    command_pool,
-    const vk::raii::Queue&          queue,
-    std::span<const std::byte>      data) {
+    const vk::raii::Device&      device,
+    VmaAllocator                 allocator,
+    const vk::raii::CommandPool& command_pool,
+    const vk::raii::Queue&       queue,
+    std::span<const std::byte>   data) {
 
-    vk::DeviceSize size = data.size();
+    auto size = static_cast<vk::DeviceSize>(data.size());
 
-    // Create staging buffer (host-visible)
+    // Staging buffer (host-visible, mapped)
     Buffer staging = create(
-        device, physical_device, size,
+        allocator, size,
         vk::BufferUsageFlagBits::eTransferSrc,
-        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        VMA_MEMORY_USAGE_AUTO,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+        VMA_ALLOCATION_CREATE_MAPPED_BIT);
 
-    // Map and copy data into staging buffer
-    void* mapped = staging.memory_.mapMemory(0, size);
-    std::memcpy(mapped, data.data(), size);
-    staging.memory_.unmapMemory();
+    void* mapped = staging.map();
+    std::memcpy(mapped, data.data(), data.size());
+    staging.unmap();
 
-    // Create device-local index buffer
+    // Device-local index buffer
     Buffer index_buf = create(
-        device, physical_device, size,
+        allocator, size,
         vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst,
-        vk::MemoryPropertyFlagBits::eDeviceLocal);
+        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
     // Copy via one-shot command buffer
     vk::CommandBufferAllocateInfo alloc_info{
@@ -87,7 +154,7 @@ Buffer Buffer::create_index_buffer(
     auto& cmd = cmd_buffers[0];
 
     cmd.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cmd.copyBuffer(*staging.buffer_, *index_buf.buffer_, vk::BufferCopy{0, 0, size});
+    cmd.copyBuffer(vk::Buffer{staging.buffer_}, vk::Buffer{index_buf.buffer_}, vk::BufferCopy{0, 0, size});
     cmd.end();
 
     vk::SubmitInfo submit_info{{}, {}, *cmd};
@@ -97,58 +164,20 @@ Buffer Buffer::create_index_buffer(
     return index_buf;
 }
 
-Buffer Buffer::create(
-    const vk::raii::Device&         device,
-    const vk::raii::PhysicalDevice& physical_device,
-    vk::DeviceSize                  size,
-    vk::BufferUsageFlags            usage,
-    vk::MemoryPropertyFlags         memory_properties) {
-
-    Buffer buf;
-    buf.size_ = size;
-
-    vk::BufferCreateInfo buffer_info{
-        {},
-        size,
-        usage,
-        vk::SharingMode::eExclusive,
-    };
-
-    buf.buffer_ = vk::raii::Buffer{device, buffer_info};
-
-    auto mem_requirements = buf.buffer_.getMemoryRequirements();
-    vk::MemoryAllocateInfo alloc_info{
-        mem_requirements.size,
-        find_memory_type(physical_device, mem_requirements.memoryTypeBits, memory_properties),
-    };
-
-    buf.memory_ = vk::raii::DeviceMemory{device, alloc_info};
-    buf.buffer_.bindMemory(*buf.memory_, 0);
-
-    return buf;
-}
-
-void* Buffer::map(vk::DeviceSize offset, vk::DeviceSize size) {
-    return memory_.mapMemory(offset, size == VK_WHOLE_SIZE ? size_ : size);
+void* Buffer::map() {
+    void* data = nullptr;
+    vmaMapMemory(allocator_, allocation_, &data);
+    return data;
 }
 
 void Buffer::unmap() {
-    memory_.unmapMemory();
+    vmaUnmapMemory(allocator_, allocation_);
 }
 
-uint32_t Buffer::find_memory_type(
-    const vk::raii::PhysicalDevice& physical_device,
-    uint32_t                        type_filter,
-    vk::MemoryPropertyFlags         properties) {
-
-    auto mem_props = physical_device.getMemoryProperties();
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
-        if ((type_filter & (1 << i)) &&
-            (mem_props.memoryTypes[i].propertyFlags & properties) == properties) {
-            return i;
-        }
-    }
-    throw std::runtime_error("Failed to find suitable memory type");
+void* Buffer::mapped_data() const {
+    VmaAllocationInfo info{};
+    vmaGetAllocationInfo(allocator_, allocation_, &info);
+    return info.pMappedData;
 }
 
 } // namespace steel
