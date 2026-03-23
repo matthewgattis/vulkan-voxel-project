@@ -24,7 +24,7 @@ Application::Application()
     , chunk_manager_{engine_, world_, material_, terrain_generator_}
     , camera_entity_{world_.create()}
     , camera_controller_{
-          glm::vec3{32.0f, -20.0f, 40.0f},
+          glm::vec3{32.0f, -20.0f, 140.0f},
           0.0f,                                     // yaw: looking along +Y
           std::atan2(-30.0f, 52.0f)}                // pitch: direction (0,52,-30)
 {

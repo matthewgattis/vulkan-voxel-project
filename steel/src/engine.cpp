@@ -214,7 +214,7 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
 
     // Begin scene render pass (renders to offscreen target)
     std::array<vk::ClearValue, 2> clear_values = {
-        vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}},
+        vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.53f, 0.71f, 0.92f, 1.0f}}},
         vk::ClearValue{vk::ClearDepthStencilValue{.depth = 1.0f, .stencil = 0}},
     };
 

@@ -43,7 +43,7 @@ public:
     void update(const glm::vec3& camera_pos);
 
 private:
-    static constexpr int LOAD_RADIUS = 8;
+    static constexpr int LOAD_RADIUS = 32;
     static constexpr uint32_t WORKER_COUNT = 4;
 
     // --- Loaded column data ---

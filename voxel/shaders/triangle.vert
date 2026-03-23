@@ -13,11 +13,26 @@ layout(push_constant) uniform PushConstants {
 };
 
 layout(location = 0) out vec3 fragColor;
-layout(location = 1) out vec3 fragNormalWorld;
+
+const vec3 LIGHT_DIR = normalize(vec3(1.0, 2.0, 3.0));
+const vec3 SKY_COLOR = vec3(0.53, 0.71, 0.92);
+const float FOG_START = 250.0;
+const float FOG_END = 500.0;
 
 void main() {
     vec4 worldPos = model * vec4(inPosition, 1.0);
     gl_Position = frame.view_projection * worldPos;
-    fragNormalWorld = mat3(model) * inNormal;
-    fragColor = inColor;
+
+    // Half-Lambert lighting
+    vec3 N = normalize(mat3(model) * inNormal);
+    float NdotL = dot(N, LIGHT_DIR);
+    float halfLambert = NdotL * 0.5 + 0.5;
+    halfLambert = halfLambert * halfLambert;
+    vec3 lit = halfLambert * inColor;
+
+    // Distance fog
+    float dist = gl_Position.w;
+    float fog = clamp((dist - FOG_START) / (FOG_END - FOG_START), 0.0, 1.0);
+
+    fragColor = mix(lit, SKY_COLOR, fog);
 }

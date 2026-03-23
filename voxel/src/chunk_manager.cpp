@@ -68,19 +68,22 @@ void ChunkManager::worker_loop(std::stop_token stop) {
             continue;
         }
 
-        // Generate voxels + mesh (CPU only)
+        // Generate heightmap for this column, then only mesh surface slices
         ColumnResult result{request.key, {}};
-        int max_cz = generator_.column_height();
+        TerrainColumn column{request.key.cx, request.key.cy, generator_};
 
-        auto solid_query = [this](int wx, int wy, int wz) {
+        auto opaque_query = [&](int wx, int wy, int wz) {
+            return generator_.is_opaque_at(wx, wy, wz);
+        };
+        auto solid_query = [&](int wx, int wy, int wz) {
             return generator_.is_solid_at(wx, wy, wz);
         };
 
-        for (int cz = 0; cz < max_cz && !stop.stop_requested(); ++cz) {
+        for (int cz = column.min_slice(); cz <= column.max_slice() && !stop.stop_requested(); ++cz) {
             Chunk chunk{request.key.cx, request.key.cy, cz};
-            generator_.fill_chunk(chunk);
+            column.fill_chunk(chunk);
 
-            ChunkMesh mesh{chunk, solid_query};
+            ChunkMesh mesh{chunk, opaque_query, solid_query};
             if (!mesh.empty()) {
                 result.slices.push_back({cz, std::move(mesh)});
             }

@@ -10,11 +10,11 @@
 
 namespace voxel {
 
-using SolidQuery = std::function<bool(int wx, int wy, int wz)>;
+using VoxelQuery = std::function<bool(int wx, int wy, int wz)>;
 
 class ChunkMesh : public glass::Mesh {
 public:
-    ChunkMesh(const Chunk& chunk, const SolidQuery& is_solid_at);
+    ChunkMesh(const Chunk& chunk, const VoxelQuery& is_opaque_at, const VoxelQuery& is_solid_at);
 
     std::span<const glass::Vertex> vertices() const override { return vertices_; }
     std::span<const uint32_t> indices() const override { return indices_; }

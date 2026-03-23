@@ -94,7 +94,7 @@ struct VertexEqual {
 // Mesh construction
 // ---------------------------------------------------------------------------
 
-ChunkMesh::ChunkMesh(const Chunk& chunk, const SolidQuery& is_solid_at) {
+ChunkMesh::ChunkMesh(const Chunk& chunk, const VoxelQuery& is_opaque_at, const VoxelQuery& is_solid_at) {
     // Direction offsets: +X, -X, +Y, -Y, +Z, -Z
     static constexpr int dx[] = { 1, -1,  0,  0,  0,  0};
     static constexpr int dy[] = { 0,  0,  1, -1,  0,  0};
@@ -130,7 +130,7 @@ ChunkMesh::ChunkMesh(const Chunk& chunk, const SolidQuery& is_solid_at) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
             for (int x = 0; x < CHUNK_SIZE; ++x) {
                 auto type = chunk.get(x, y, z);
-                if (!is_solid(type)) continue;
+                if (!is_opaque(type)) continue;
 
                 auto color = voxel_color(type);
                 auto fx = static_cast<float>(x);
@@ -148,7 +148,7 @@ ChunkMesh::ChunkMesh(const Chunk& chunk, const SolidQuery& is_solid_at) {
                     int nwy = wy + dy[face];
                     int nwz = wz + dz[face];
 
-                    if (is_solid_at(nwx, nwy, nwz)) continue;
+                    if (is_opaque_at(nwx, nwy, nwz)) continue;
 
                     // Compute per-vertex AO
                     int ao[4];
