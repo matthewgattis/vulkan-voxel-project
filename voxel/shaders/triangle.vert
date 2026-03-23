@@ -16,8 +16,9 @@ layout(location = 0) out vec3 fragColor;
 
 const vec3 LIGHT_DIR = normalize(vec3(1.0, 2.0, 3.0));
 const vec3 SKY_COLOR = vec3(0.53, 0.71, 0.92);
-const float FOG_START = 250.0;
+const float FOG_START = 200.0;
 const float FOG_END = 500.0;
+const float FOG_DENSITY = 3.0;
 
 void main() {
     vec4 worldPos = model * vec4(inPosition, 1.0);
@@ -30,9 +31,11 @@ void main() {
     halfLambert = halfLambert * halfLambert;
     vec3 lit = halfLambert * inColor;
 
-    // Distance fog
+    // Exponential squared fog with start/end range
     float dist = gl_Position.w;
-    float fog = clamp((dist - FOG_START) / (FOG_END - FOG_START), 0.0, 1.0);
+    float t = clamp((dist - FOG_START) / (FOG_END - FOG_START), 0.0, 1.0);
+    float f = FOG_DENSITY * t;
+    float fog = 1.0 - exp(-f * f);
 
     fragColor = mix(lit, SKY_COLOR, fog);
 }
