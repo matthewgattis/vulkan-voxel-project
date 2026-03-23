@@ -10,6 +10,22 @@
 
 namespace steel {
 
+// Used by is_device_suitable() before Swapchain exists.
+static vk::Format find_supported_depth_format(const vk::raii::PhysicalDevice& dev) {
+    constexpr std::array candidates = {
+        vk::Format::eD32Sfloat,
+        vk::Format::eD32SfloatS8Uint,
+        vk::Format::eD24UnormS8Uint,
+    };
+    for (auto format : candidates) {
+        auto props = dev.getFormatProperties(format);
+        if (props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eDepthStencilAttachment) {
+            return format;
+        }
+    }
+    return vk::Format::eUndefined;
+}
+
 Engine::Engine(std::string_view title) {
     spdlog::info("steel::Engine initializing");
 
@@ -63,24 +79,22 @@ Engine::Engine(std::string_view title) {
     create_instance(title);
     create_surface();
     pick_physical_device();
-    depth_format_ = find_depth_format(physical_device_);
     create_device();
     create_allocator();
-    create_swapchain();
-    create_depth_resources();
-    create_offscreen_target();
-    create_render_pass();
-    create_offscreen_framebuffer();
+
+    swapchain_.create(physical_device_, device_, surface_, allocator_, window_,
+                      graphics_family_index_, present_family_index_);
+
     create_command_pool();
     create_sync_objects();
 
-    fxaa_pass_.create(device_, surface_format_.format, swapchain_extent_,
-                      swapchain_image_views_, offscreen_image_view_);
+    fxaa_pass_.create(device_, swapchain_.color_format(), swapchain_.extent(),
+                      swapchain_.image_views(), swapchain_.offscreen_image_view());
     imgui_pass_.create(instance_, physical_device_, device_,
                        graphics_family_index_, graphics_queue_,
-                       surface_format_.format, swapchain_extent_,
-                       swapchain_image_views_,
-                       static_cast<uint32_t>(swapchain_images_.size()),
+                       swapchain_.color_format(), swapchain_.extent(),
+                       swapchain_.image_views(),
+                       static_cast<uint32_t>(swapchain_.images().size()),
                        window_);
 
     last_frame_time_ = SDL_GetTicks();
@@ -92,9 +106,8 @@ Engine::~Engine() {
     wait_idle();
     imgui_pass_.shutdown();
 
-    // Destroy VMA-managed images before allocator
-    depth_image_ = VmaImage{};
-    offscreen_image_ = VmaImage{};
+    // Destroy swapchain resources (VmaImages) before the allocator
+    swapchain_ = Swapchain{};
 
     if (allocator_ != VK_NULL_HANDLE) {
         vmaDestroyAllocator(allocator_);
@@ -192,7 +205,7 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
     vk::Result result;
     uint32_t image_index;
     try {
-        auto [r, i] = swapchain_.acquireNextImage(UINT64_MAX, *image_available_[current_frame_]);
+        auto [r, i] = swapchain_.handle().acquireNextImage(UINT64_MAX, *image_available_[current_frame_]);
         result = r;
         image_index = i;
     } catch (const vk::OutOfDateKHRError&) {
@@ -221,10 +234,12 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
         vk::ClearValue{vk::ClearDepthStencilValue{.depth = 1.0f, .stencil = 0}},
     };
 
+    auto ext = swapchain_.extent();
+
     vk::RenderPassBeginInfo render_pass_info{
-        .renderPass = *render_pass_,
-        .framebuffer = *offscreen_framebuffer_,
-        .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_},
+        .renderPass = *swapchain_.render_pass(),
+        .framebuffer = *swapchain_.offscreen_framebuffer(),
+        .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = ext},
         .clearValueCount = static_cast<uint32_t>(clear_values.size()),
         .pClearValues = clear_values.data(),
     };
@@ -234,12 +249,12 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
     // Set viewport and scissor
     vk::Viewport viewport{
         .x = 0.0f, .y = 0.0f,
-        .width = static_cast<float>(swapchain_extent_.width),
-        .height = static_cast<float>(swapchain_extent_.height),
+        .width = static_cast<float>(ext.width),
+        .height = static_cast<float>(ext.height),
         .minDepth = 0.0f, .maxDepth = 1.0f};
     cmd.setViewport(0, viewport);
 
-    vk::Rect2D scissor{.offset = {0, 0}, .extent = swapchain_extent_};
+    vk::Rect2D scissor{.offset = {0, 0}, .extent = ext};
     cmd.setScissor(0, scissor);
 
     return &cmd;
@@ -247,16 +262,17 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
 
 void Engine::end_frame() {
     auto& cmd = command_buffers_[current_frame_];
+    auto ext = swapchain_.extent();
 
     // End scene render pass
     cmd.endRenderPass();
 
     // FXAA post-process pass
-    fxaa_pass_.apply(cmd, current_image_index_, swapchain_extent_);
+    fxaa_pass_.apply(cmd, current_image_index_, ext);
 
     // ImGui render pass — always runs for layout transition to ePresentSrcKHR.
     // When ImGui is disabled, the draw data is empty so this is essentially free.
-    imgui_pass_.render(cmd, current_image_index_, swapchain_extent_);
+    imgui_pass_.render(cmd, current_image_index_, ext);
 
     cmd.end();
 
@@ -279,7 +295,7 @@ void Engine::end_frame() {
     graphics_queue_.submit(submit_info, *in_flight_fences_[current_frame_]);
 
     // Present
-    vk::SwapchainKHR swapchain_handle = *swapchain_;
+    vk::SwapchainKHR swapchain_handle = *swapchain_.handle();
     vk::PresentInfoKHR present_info{
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = signal_semaphores,
@@ -417,25 +433,9 @@ bool Engine::is_device_suitable(const vk::raii::PhysicalDevice& dev) const {
     if (formats.empty() || modes.empty()) return false;
 
     // Check for a supported depth format
-    if (find_depth_format(dev) == vk::Format::eUndefined) return false;
+    if (find_supported_depth_format(dev) == vk::Format::eUndefined) return false;
 
     return true;
-}
-
-vk::Format Engine::find_depth_format(const vk::raii::PhysicalDevice& dev) const {
-    constexpr std::array candidates = {
-        vk::Format::eD32Sfloat,
-        vk::Format::eD32SfloatS8Uint,
-        vk::Format::eD24UnormS8Uint,
-    };
-
-    for (auto format : candidates) {
-        auto props = dev.getFormatProperties(format);
-        if (props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eDepthStencilAttachment) {
-            return format;
-        }
-    }
-    return vk::Format::eUndefined;
 }
 
 void Engine::pick_physical_device() {
@@ -537,244 +537,6 @@ void Engine::create_device() {
 }
 
 // ---------------------------------------------------------------------------
-// Swapchain
-// ---------------------------------------------------------------------------
-
-void Engine::create_swapchain() {
-    auto capabilities = physical_device_.getSurfaceCapabilitiesKHR(*surface_);
-    auto formats      = physical_device_.getSurfaceFormatsKHR(*surface_);
-
-    // Pick surface format: prefer B8G8R8A8_SRGB
-    surface_format_ = formats[0];
-    for (const auto& fmt : formats) {
-        if (fmt.format == vk::Format::eB8G8R8A8Srgb &&
-            fmt.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-            surface_format_ = fmt;
-            break;
-        }
-    }
-
-    // Extent
-    if (capabilities.currentExtent.width != UINT32_MAX) {
-        swapchain_extent_ = capabilities.currentExtent;
-    } else {
-        int w = 0, h = 0;
-        SDL_GetWindowSizeInPixels(window_, &w, &h);
-        swapchain_extent_.width  = std::clamp(static_cast<uint32_t>(w),
-            capabilities.minImageExtent.width,  capabilities.maxImageExtent.width);
-        swapchain_extent_.height = std::clamp(static_cast<uint32_t>(h),
-            capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-    }
-
-    uint32_t image_count = capabilities.minImageCount + 1;
-    if (capabilities.maxImageCount > 0 && image_count > capabilities.maxImageCount) {
-        image_count = capabilities.maxImageCount;
-    }
-
-    vk::SwapchainKHR old_swapchain = *swapchain_;
-
-    vk::SwapchainCreateInfoKHR create_info{
-        .surface = *surface_,
-        .minImageCount = image_count,
-        .imageFormat = surface_format_.format,
-        .imageColorSpace = surface_format_.colorSpace,
-        .imageExtent = swapchain_extent_,
-        .imageArrayLayers = 1,
-        .imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
-        .imageSharingMode = vk::SharingMode::eExclusive,
-        .preTransform = capabilities.currentTransform,
-        .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
-        .presentMode = vk::PresentModeKHR::eFifo,
-        .clipped = VK_TRUE,
-        .oldSwapchain = old_swapchain,
-    };
-
-    if (graphics_family_index_ != present_family_index_) {
-        std::array<uint32_t, 2> indices = {graphics_family_index_, present_family_index_};
-        create_info.imageSharingMode      = vk::SharingMode::eConcurrent;
-        create_info.queueFamilyIndexCount = static_cast<uint32_t>(indices.size());
-        create_info.pQueueFamilyIndices   = indices.data();
-    }
-
-    swapchain_ = vk::raii::SwapchainKHR{device_, create_info};
-    swapchain_images_ = swapchain_.getImages();
-
-    // Create image views
-    swapchain_image_views_.clear();
-    for (auto image : swapchain_images_) {
-        vk::ImageViewCreateInfo view_info{
-            .image = image,
-            .viewType = vk::ImageViewType::e2D,
-            .format = surface_format_.format,
-            .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1},
-        };
-        swapchain_image_views_.emplace_back(device_, view_info);
-    }
-
-    spdlog::info("Swapchain created ({}x{}, {} images, format {})",
-                 swapchain_extent_.width, swapchain_extent_.height,
-                 swapchain_images_.size(), vk::to_string(surface_format_.format));
-}
-
-// ---------------------------------------------------------------------------
-// Depth buffer
-// ---------------------------------------------------------------------------
-
-void Engine::create_depth_resources() {
-    VkImageCreateInfo image_info{};
-    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_info.imageType = VK_IMAGE_TYPE_2D;
-    image_info.format = static_cast<VkFormat>(depth_format_);
-    image_info.extent = {swapchain_extent_.width, swapchain_extent_.height, 1};
-    image_info.mipLevels = 1;
-    image_info.arrayLayers = 1;
-    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo alloc_info{};
-    alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-    depth_image_ = VmaImage{};
-    depth_image_.allocator = allocator_;
-    VkResult result = vmaCreateImage(allocator_, &image_info, &alloc_info,
-                                     &depth_image_.image, &depth_image_.allocation, nullptr);
-    if (result != VK_SUCCESS) {
-        throw std::runtime_error("vmaCreateImage failed for depth buffer");
-    }
-
-    vk::ImageViewCreateInfo view_info{
-        .image = vk::Image{depth_image_.image},
-        .viewType = vk::ImageViewType::e2D,
-        .format = depth_format_,
-        .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eDepth, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1},
-    };
-
-    depth_image_view_ = vk::raii::ImageView{device_, view_info};
-    spdlog::info("Depth buffer created (format {})", vk::to_string(depth_format_));
-}
-
-// ---------------------------------------------------------------------------
-// Offscreen render target
-// ---------------------------------------------------------------------------
-
-void Engine::create_offscreen_target() {
-    VkImageCreateInfo image_info{};
-    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_info.imageType = VK_IMAGE_TYPE_2D;
-    image_info.format = static_cast<VkFormat>(surface_format_.format);
-    image_info.extent = {swapchain_extent_.width, swapchain_extent_.height, 1};
-    image_info.mipLevels = 1;
-    image_info.arrayLayers = 1;
-    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo alloc_info{};
-    alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-    offscreen_image_ = VmaImage{};
-    offscreen_image_.allocator = allocator_;
-    VkResult result = vmaCreateImage(allocator_, &image_info, &alloc_info,
-                                     &offscreen_image_.image, &offscreen_image_.allocation, nullptr);
-    if (result != VK_SUCCESS) {
-        throw std::runtime_error("vmaCreateImage failed for offscreen target");
-    }
-
-    vk::ImageViewCreateInfo view_info{
-        .image = vk::Image{offscreen_image_.image},
-        .viewType = vk::ImageViewType::e2D,
-        .format = surface_format_.format,
-        .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1},
-    };
-
-    offscreen_image_view_ = vk::raii::ImageView{device_, view_info};
-    spdlog::info("Offscreen render target created ({}x{})", swapchain_extent_.width, swapchain_extent_.height);
-}
-
-// ---------------------------------------------------------------------------
-// Render pass (scene — now outputs to shader-read-only for FXAA)
-// ---------------------------------------------------------------------------
-
-void Engine::create_render_pass() {
-    vk::AttachmentDescription color_attachment{
-        .format = surface_format_.format,
-        .samples = vk::SampleCountFlagBits::e1,
-        .loadOp = vk::AttachmentLoadOp::eClear,
-        .storeOp = vk::AttachmentStoreOp::eStore,
-        .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
-        .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
-        .initialLayout = vk::ImageLayout::eUndefined,
-        .finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-    };
-
-    vk::AttachmentDescription depth_attachment{
-        .format = depth_format_,
-        .samples = vk::SampleCountFlagBits::e1,
-        .loadOp = vk::AttachmentLoadOp::eClear,
-        .storeOp = vk::AttachmentStoreOp::eDontCare,
-        .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
-        .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
-        .initialLayout = vk::ImageLayout::eUndefined,
-        .finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-    };
-
-    vk::AttachmentReference color_ref{.attachment = 0, .layout = vk::ImageLayout::eColorAttachmentOptimal};
-    vk::AttachmentReference depth_ref{.attachment = 1, .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal};
-
-    vk::SubpassDescription subpass{
-        .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &color_ref,
-        .pDepthStencilAttachment = &depth_ref,
-    };
-
-    vk::SubpassDependency dependency{
-        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
-        .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
-        .dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
-        .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-    };
-
-    std::array<vk::AttachmentDescription, 2> attachments = {color_attachment, depth_attachment};
-
-    vk::RenderPassCreateInfo create_info{
-        .attachmentCount = static_cast<uint32_t>(attachments.size()),
-        .pAttachments = attachments.data(),
-        .subpassCount = 1,
-        .pSubpasses = &subpass,
-        .dependencyCount = 1,
-        .pDependencies = &dependency,
-    };
-
-    render_pass_ = vk::raii::RenderPass{device_, create_info};
-}
-
-// ---------------------------------------------------------------------------
-// Offscreen framebuffer (scene pass)
-// ---------------------------------------------------------------------------
-
-void Engine::create_offscreen_framebuffer() {
-    std::array<vk::ImageView, 2> attachments = {*offscreen_image_view_, *depth_image_view_};
-
-    vk::FramebufferCreateInfo create_info{
-        .renderPass = *render_pass_,
-        .attachmentCount = static_cast<uint32_t>(attachments.size()),
-        .pAttachments = attachments.data(),
-        .width = swapchain_extent_.width,
-        .height = swapchain_extent_.height,
-        .layers = 1,
-    };
-
-    offscreen_framebuffer_ = vk::raii::Framebuffer{device_, create_info};
-}
-
-
-// ---------------------------------------------------------------------------
 // Command pool & buffers
 // ---------------------------------------------------------------------------
 
@@ -798,7 +560,7 @@ void Engine::create_command_pool() {
 // ---------------------------------------------------------------------------
 
 void Engine::create_sync_objects() {
-    auto image_count = static_cast<uint32_t>(swapchain_images_.size());
+    auto image_count = static_cast<uint32_t>(swapchain_.images().size());
 
     image_available_.reserve(MAX_FRAMES_IN_FLIGHT);
     in_flight_fences_.reserve(MAX_FRAMES_IN_FLIGHT);
@@ -833,24 +595,13 @@ void Engine::recreate_swapchain() {
 
     device_.waitIdle();
 
-    // Destroy extent-dependent resources in reverse creation order
-    offscreen_framebuffer_ = vk::raii::Framebuffer{nullptr};
-    depth_image_view_ = vk::raii::ImageView{nullptr};
-    depth_image_ = VmaImage{};
-    offscreen_image_view_ = vk::raii::ImageView{nullptr};
-    offscreen_image_ = VmaImage{};
-    swapchain_image_views_.clear();
+    swapchain_.recreate(physical_device_, device_, surface_, allocator_, window_,
+                        graphics_family_index_, present_family_index_);
 
-    create_swapchain();
-    create_depth_resources();
-    create_offscreen_target();
-    create_offscreen_framebuffer();
-    fxaa_pass_.recreate(device_, swapchain_extent_,
-                        swapchain_image_views_, offscreen_image_view_);
-    imgui_pass_.recreate(device_, swapchain_extent_, swapchain_image_views_);
+    fxaa_pass_.recreate(device_, swapchain_.extent(),
+                        swapchain_.image_views(), swapchain_.offscreen_image_view());
+    imgui_pass_.recreate(device_, swapchain_.extent(), swapchain_.image_views());
     current_frame_ = 0;
-
-    spdlog::info("Swapchain recreated ({}x{})", swapchain_extent_.width, swapchain_extent_.height);
 }
 
 // ---------------------------------------------------------------------------

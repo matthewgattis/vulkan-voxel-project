@@ -2,13 +2,12 @@
 
 #include <steel/fxaa_pass.hpp>
 #include <steel/imgui_pass.hpp>
+#include <steel/swapchain.hpp>
 
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
-
-#include <glm/vec2.hpp>
 
 #include <cstdint>
 #include <string_view>
@@ -45,10 +44,10 @@ public:
 
     // Accessors
     const vk::raii::Device&     device()      const { return device_; }
-    const vk::raii::RenderPass& render_pass() const { return render_pass_; }
-    vk::Extent2D                extent()      const { return swapchain_extent_; }
-    vk::Format                  color_format() const { return surface_format_.format; }
-    vk::Format                  depth_format() const { return depth_format_; }
+    const vk::raii::RenderPass& render_pass() const { return swapchain_.render_pass(); }
+    vk::Extent2D                extent()      const { return swapchain_.extent(); }
+    vk::Format                  color_format() const { return swapchain_.color_format(); }
+    vk::Format                  depth_format() const { return swapchain_.depth_format(); }
     const vk::raii::PhysicalDevice& physical_device() const { return physical_device_; }
     const vk::raii::Queue&      graphics_queue() const { return graphics_queue_; }
     const vk::raii::CommandPool& command_pool()  const { return command_pool_; }
@@ -68,45 +67,14 @@ private:
     void pick_physical_device();
     void create_device();
     void create_allocator();
-    void create_swapchain();
-    void create_depth_resources();
-    void create_offscreen_target();
-    void create_render_pass();
-    void create_offscreen_framebuffer();
     void create_command_pool();
     void create_sync_objects();
     void recreate_swapchain();
 
     bool is_device_suitable(const vk::raii::PhysicalDevice& dev) const;
-    vk::Format find_depth_format(const vk::raii::PhysicalDevice& dev) const;
 
     // SDL
     SDL_Window* window_ = nullptr;
-
-    // VMA image — wraps VkImage + VmaAllocation with RAII cleanup
-    struct VmaImage {
-        VmaAllocator  allocator  = VK_NULL_HANDLE;
-        VkImage       image      = VK_NULL_HANDLE;
-        VmaAllocation allocation = VK_NULL_HANDLE;
-
-        VmaImage() = default;
-        ~VmaImage() { destroy(); }
-        VmaImage(VmaImage&& o) noexcept
-            : allocator{o.allocator}, image{o.image}, allocation{o.allocation}
-        { o.image = VK_NULL_HANDLE; o.allocation = VK_NULL_HANDLE; }
-        VmaImage& operator=(VmaImage&& o) noexcept {
-            if (this != &o) {
-                destroy();
-                allocator = o.allocator; image = o.image; allocation = o.allocation;
-                o.image = VK_NULL_HANDLE; o.allocation = VK_NULL_HANDLE;
-            }
-            return *this;
-        }
-        VmaImage(const VmaImage&) = delete;
-        VmaImage& operator=(const VmaImage&) = delete;
-    private:
-        void destroy() { if (image) { vmaDestroyImage(allocator, image, allocation); image = VK_NULL_HANDLE; } }
-    };
 
     // Vulkan core (declaration order matters for destruction)
     vk::raii::Context       context_;
@@ -121,25 +89,8 @@ private:
     uint32_t graphics_family_index_ = 0;
     uint32_t present_family_index_  = 0;
 
-    // Swapchain
-    vk::SurfaceFormatKHR             surface_format_;
-    vk::Extent2D                     swapchain_extent_;
-    vk::raii::SwapchainKHR           swapchain_     {nullptr};
-    std::vector<vk::Image>           swapchain_images_;
-    std::vector<vk::raii::ImageView> swapchain_image_views_;
-
-    // Depth buffer
-    vk::Format                   depth_format_ = vk::Format::eD32Sfloat;
-    VmaImage                     depth_image_;
-    vk::raii::ImageView          depth_image_view_ {nullptr};
-
-    // Offscreen render target (scene renders here, FXAA reads from it)
-    VmaImage                     offscreen_image_;
-    vk::raii::ImageView          offscreen_image_view_ {nullptr};
-
-    // Scene render pass & offscreen framebuffer
-    vk::raii::RenderPass                render_pass_  {nullptr};
-    vk::raii::Framebuffer               offscreen_framebuffer_ {nullptr};
+    // Swapchain & render targets
+    Swapchain swapchain_;
 
     // Post-process passes
     FxaaPass  fxaa_pass_;

@@ -35,7 +35,7 @@ public:
             .descriptorCount = MAX_FRAMES_IN_FLIGHT,
         };
         vk::DescriptorPoolCreateInfo pool_info{
-            .flags = {},
+            .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
             .maxSets = MAX_FRAMES_IN_FLIGHT,
             .poolSizeCount = 1,
             .pPoolSizes = &pool_size,

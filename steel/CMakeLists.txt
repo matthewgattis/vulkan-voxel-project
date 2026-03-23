@@ -2,6 +2,7 @@ add_library(steel)
 
 target_sources(steel PRIVATE
     src/engine.cpp
+    src/swapchain.cpp
     src/fxaa_pass.cpp
     src/imgui_pass.cpp
     src/pipeline.cpp
