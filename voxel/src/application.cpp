@@ -94,8 +94,14 @@ void Application::run() {
         mouse_dy_ = 0.0f;
         mouse_capture_first_frame_ = false;
 
+        // Compute view-projection for frustum culling
+        auto& cam_transform = world_.get<glass::Transform>(camera_entity_);
+        auto& cam_component = world_.get<glass::CameraComponent>(camera_entity_);
+        glm::mat4 view = glm::inverse(cam_transform.matrix);
+        glm::mat4 vp = cam_component.camera.projection() * view;
+
         // Load/unload chunks around camera
-        chunk_manager_.update(camera_controller_.position());
+        chunk_manager_.update(camera_controller_.position(), vp);
 
         // Update FPS counter once per second
         fps_timer_ += engine_.delta_time();

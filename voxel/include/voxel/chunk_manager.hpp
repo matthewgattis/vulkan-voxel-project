@@ -8,8 +8,11 @@
 #include <glass/world.hpp>
 #include <steel/engine.hpp>
 
+#include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -40,7 +43,7 @@ public:
                  const glass::Material& material, const TerrainGenerator& generator);
     ~ChunkManager();
 
-    void update(const glm::vec3& camera_pos);
+    void update(const glm::vec3& camera_pos, const glm::mat4& view_projection);
 
 private:
     static constexpr int LOAD_RADIUS = 32;
@@ -62,12 +65,20 @@ private:
 
     void worker_loop(std::stop_token stop);
 
-    // Request: queued for workers (min-heap by distance)
+    // Request: queued for workers (in-frustum first, then closest)
     struct ColumnRequest {
         ChunkColumnKey key;
         float distance_sq;
-        bool operator>(const ColumnRequest& o) const { return distance_sq > o.distance_sq; }
+        bool in_frustum;
+        bool operator>(const ColumnRequest& o) const {
+            if (in_frustum != o.in_frustum) return !in_frustum;
+            return distance_sq > o.distance_sq;
+        }
     };
+
+    using Frustum = std::array<glm::vec4, 6>;
+    static Frustum extract_frustum(const glm::mat4& vp);
+    static bool column_in_frustum(const Frustum& frustum, int cx, int cy);
 
     // Result: worker → main thread (CPU-side mesh data)
     struct ColumnResult {

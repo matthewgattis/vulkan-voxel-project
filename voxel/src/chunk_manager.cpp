@@ -97,6 +97,51 @@ void ChunkManager::worker_loop(std::stop_token stop) {
 }
 
 // ---------------------------------------------------------------------------
+// Frustum culling
+// ---------------------------------------------------------------------------
+
+ChunkManager::Frustum ChunkManager::extract_frustum(const glm::mat4& vp) {
+    Frustum planes;
+    // Left, Right, Bottom, Top, Near, Far
+    for (int i = 0; i < 4; ++i) {
+        planes[0][i] = vp[i][3] + vp[i][0]; // left
+        planes[1][i] = vp[i][3] - vp[i][0]; // right
+        planes[2][i] = vp[i][3] + vp[i][1]; // bottom
+        planes[3][i] = vp[i][3] - vp[i][1]; // top
+        planes[4][i] = vp[i][3] + vp[i][2]; // near
+        planes[5][i] = vp[i][3] - vp[i][2]; // far
+    }
+    // Normalize
+    for (auto& p : planes) {
+        float len = glm::length(glm::vec3(p));
+        p /= len;
+    }
+    return planes;
+}
+
+bool ChunkManager::column_in_frustum(const Frustum& frustum, int cx, int cy) {
+    // AABB for the column: XY from chunk coords, Z spans full possible height
+    float min_x = static_cast<float>(cx * CHUNK_SIZE);
+    float min_y = static_cast<float>(cy * CHUNK_SIZE);
+    float min_z = 0.0f;
+    float max_x = min_x + static_cast<float>(CHUNK_SIZE);
+    float max_y = min_y + static_cast<float>(CHUNK_SIZE);
+    float max_z = 256.0f;
+
+    for (const auto& plane : frustum) {
+        // Find the corner most in the direction of the plane normal
+        float px = (plane.x > 0.0f) ? max_x : min_x;
+        float py = (plane.y > 0.0f) ? max_y : min_y;
+        float pz = (plane.z > 0.0f) ? max_z : min_z;
+
+        if (plane.x * px + plane.y * py + plane.z * pz + plane.w < 0.0f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Column unload
 // ---------------------------------------------------------------------------
 
@@ -115,7 +160,7 @@ void ChunkManager::unload_column(const ChunkColumnKey& key) {
 // Per-frame update (main thread)
 // ---------------------------------------------------------------------------
 
-void ChunkManager::update(const glm::vec3& camera_pos) {
+void ChunkManager::update(const glm::vec3& camera_pos, const glm::mat4& view_projection) {
     int cam_cx = static_cast<int>(std::floor(camera_pos.x / static_cast<float>(CHUNK_SIZE)));
     int cam_cy = static_cast<int>(std::floor(camera_pos.y / static_cast<float>(CHUNK_SIZE)));
 
@@ -177,8 +222,9 @@ void ChunkManager::update(const glm::vec3& camera_pos) {
     cam_cx_.store(cam_cx, std::memory_order_relaxed);
     cam_cy_.store(cam_cy, std::memory_order_relaxed);
 
-    // 4. Queue columns that need loading (closest first)
+    // 4. Queue columns that need loading (in-frustum first, then closest)
     {
+        auto frustum = extract_frustum(view_projection);
         std::lock_guard lock(request_mutex_);
         for (int cx = cam_cx - LOAD_RADIUS; cx <= cam_cx + LOAD_RADIUS; ++cx) {
             for (int cy = cam_cy - LOAD_RADIUS; cy <= cam_cy + LOAD_RADIUS; ++cy) {
@@ -187,7 +233,8 @@ void ChunkManager::update(const glm::vec3& camera_pos) {
 
                 float dx = static_cast<float>(cx - cam_cx);
                 float dy = static_cast<float>(cy - cam_cy);
-                request_queue_.push({key, dx * dx + dy * dy});
+                bool visible = column_in_frustum(frustum, cx, cy);
+                request_queue_.push({key, dx * dx + dy * dy, visible});
                 in_flight_.insert(key);
             }
         }
