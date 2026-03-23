@@ -1,5 +1,8 @@
 #include <voxel/chunk_mesh.hpp>
 
+#include <cstring>
+#include <unordered_map>
+
 namespace voxel {
 
 // Compute AO value for a vertex given two side neighbors and one corner neighbor.
@@ -62,6 +65,35 @@ static constexpr AONeighbors ao_table[6][4] = {
 };
 // clang-format on
 
+// ---------------------------------------------------------------------------
+// Vertex welding: hash by raw bytes of (position, normal, color)
+// ---------------------------------------------------------------------------
+
+struct VertexHash {
+    size_t operator()(const glass::Vertex& v) const {
+        // Hash the raw bytes — Vertex is 36 bytes, tightly packed
+        static_assert(sizeof(glass::Vertex) == 36);
+        const auto* data = reinterpret_cast<const uint8_t*>(&v);
+        // FNV-1a
+        size_t hash = 14695981039346656037ULL;
+        for (size_t i = 0; i < sizeof(glass::Vertex); ++i) {
+            hash ^= data[i];
+            hash *= 1099511628211ULL;
+        }
+        return hash;
+    }
+};
+
+struct VertexEqual {
+    bool operator()(const glass::Vertex& a, const glass::Vertex& b) const {
+        return std::memcmp(&a, &b, sizeof(glass::Vertex)) == 0;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Mesh construction
+// ---------------------------------------------------------------------------
+
 ChunkMesh::ChunkMesh(const Chunk& chunk, const SolidQuery& is_solid_at) {
     // Direction offsets: +X, -X, +Y, -Y, +Z, -Z
     static constexpr int dx[] = { 1, -1,  0,  0,  0,  0};
@@ -82,6 +114,17 @@ ChunkMesh::ChunkMesh(const Chunk& chunk, const SolidQuery& is_solid_at) {
     int ox = chunk.cx() * CHUNK_SIZE;
     int oy = chunk.cy() * CHUNK_SIZE;
     int oz = chunk.cz() * CHUNK_SIZE;
+
+    // Vertex deduplication map
+    std::unordered_map<glass::Vertex, uint32_t, VertexHash, VertexEqual> vertex_map;
+
+    auto emit_vertex = [&](const glass::Vertex& v) -> uint32_t {
+        auto [it, inserted] = vertex_map.emplace(v, static_cast<uint32_t>(vertices_.size()));
+        if (inserted) {
+            vertices_.push_back(v);
+        }
+        return it->second;
+    };
 
     for (int z = 0; z < CHUNK_SIZE; ++z) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
@@ -122,65 +165,65 @@ ChunkMesh::ChunkMesh(const Chunk& chunk, const SolidQuery& is_solid_at) {
                         bright[v] = ao_brightness(ao[v]);
                     }
 
-                    auto base = static_cast<uint32_t>(vertices_.size());
                     auto normal = normals[face];
 
-                    // 4 vertices per face, color modulated by AO
+                    // Build 4 vertices, deduplicate via emit_vertex
+                    uint32_t idx[4];
                     switch (face) {
                         case 0: // +X
-                            vertices_.push_back({{fx+1, fy,   fz  }, normal, color * bright[0]});
-                            vertices_.push_back({{fx+1, fy+1, fz  }, normal, color * bright[1]});
-                            vertices_.push_back({{fx+1, fy+1, fz+1}, normal, color * bright[2]});
-                            vertices_.push_back({{fx+1, fy,   fz+1}, normal, color * bright[3]});
+                            idx[0] = emit_vertex({{fx+1, fy,   fz  }, normal, color * bright[0]});
+                            idx[1] = emit_vertex({{fx+1, fy+1, fz  }, normal, color * bright[1]});
+                            idx[2] = emit_vertex({{fx+1, fy+1, fz+1}, normal, color * bright[2]});
+                            idx[3] = emit_vertex({{fx+1, fy,   fz+1}, normal, color * bright[3]});
                             break;
                         case 1: // -X
-                            vertices_.push_back({{fx, fy+1, fz  }, normal, color * bright[0]});
-                            vertices_.push_back({{fx, fy,   fz  }, normal, color * bright[1]});
-                            vertices_.push_back({{fx, fy,   fz+1}, normal, color * bright[2]});
-                            vertices_.push_back({{fx, fy+1, fz+1}, normal, color * bright[3]});
+                            idx[0] = emit_vertex({{fx, fy+1, fz  }, normal, color * bright[0]});
+                            idx[1] = emit_vertex({{fx, fy,   fz  }, normal, color * bright[1]});
+                            idx[2] = emit_vertex({{fx, fy,   fz+1}, normal, color * bright[2]});
+                            idx[3] = emit_vertex({{fx, fy+1, fz+1}, normal, color * bright[3]});
                             break;
                         case 2: // +Y
-                            vertices_.push_back({{fx+1, fy+1, fz  }, normal, color * bright[0]});
-                            vertices_.push_back({{fx,   fy+1, fz  }, normal, color * bright[1]});
-                            vertices_.push_back({{fx,   fy+1, fz+1}, normal, color * bright[2]});
-                            vertices_.push_back({{fx+1, fy+1, fz+1}, normal, color * bright[3]});
+                            idx[0] = emit_vertex({{fx+1, fy+1, fz  }, normal, color * bright[0]});
+                            idx[1] = emit_vertex({{fx,   fy+1, fz  }, normal, color * bright[1]});
+                            idx[2] = emit_vertex({{fx,   fy+1, fz+1}, normal, color * bright[2]});
+                            idx[3] = emit_vertex({{fx+1, fy+1, fz+1}, normal, color * bright[3]});
                             break;
                         case 3: // -Y
-                            vertices_.push_back({{fx,   fy, fz  }, normal, color * bright[0]});
-                            vertices_.push_back({{fx+1, fy, fz  }, normal, color * bright[1]});
-                            vertices_.push_back({{fx+1, fy, fz+1}, normal, color * bright[2]});
-                            vertices_.push_back({{fx,   fy, fz+1}, normal, color * bright[3]});
+                            idx[0] = emit_vertex({{fx,   fy, fz  }, normal, color * bright[0]});
+                            idx[1] = emit_vertex({{fx+1, fy, fz  }, normal, color * bright[1]});
+                            idx[2] = emit_vertex({{fx+1, fy, fz+1}, normal, color * bright[2]});
+                            idx[3] = emit_vertex({{fx,   fy, fz+1}, normal, color * bright[3]});
                             break;
                         case 4: // +Z (top)
-                            vertices_.push_back({{fx,   fy,   fz+1}, normal, color * bright[0]});
-                            vertices_.push_back({{fx+1, fy,   fz+1}, normal, color * bright[1]});
-                            vertices_.push_back({{fx+1, fy+1, fz+1}, normal, color * bright[2]});
-                            vertices_.push_back({{fx,   fy+1, fz+1}, normal, color * bright[3]});
+                            idx[0] = emit_vertex({{fx,   fy,   fz+1}, normal, color * bright[0]});
+                            idx[1] = emit_vertex({{fx+1, fy,   fz+1}, normal, color * bright[1]});
+                            idx[2] = emit_vertex({{fx+1, fy+1, fz+1}, normal, color * bright[2]});
+                            idx[3] = emit_vertex({{fx,   fy+1, fz+1}, normal, color * bright[3]});
                             break;
                         case 5: // -Z (bottom)
-                            vertices_.push_back({{fx,   fy+1, fz}, normal, color * bright[0]});
-                            vertices_.push_back({{fx+1, fy+1, fz}, normal, color * bright[1]});
-                            vertices_.push_back({{fx+1, fy,   fz}, normal, color * bright[2]});
-                            vertices_.push_back({{fx,   fy,   fz}, normal, color * bright[3]});
+                            idx[0] = emit_vertex({{fx,   fy+1, fz}, normal, color * bright[0]});
+                            idx[1] = emit_vertex({{fx+1, fy+1, fz}, normal, color * bright[1]});
+                            idx[2] = emit_vertex({{fx+1, fy,   fz}, normal, color * bright[2]});
+                            idx[3] = emit_vertex({{fx,   fy,   fz}, normal, color * bright[3]});
                             break;
                     }
 
                     // Triangulation: flip diagonal based on AO to avoid artifacts.
                     // Standard: 0-3-2, 2-1-0.  Flipped: 1-0-3, 3-2-1.
                     if (ao[0] + ao[2] > ao[1] + ao[3]) {
-                        indices_.push_back(base);
-                        indices_.push_back(base + 3);
-                        indices_.push_back(base + 2);
-                        indices_.push_back(base + 2);
-                        indices_.push_back(base + 1);
-                        indices_.push_back(base);
+                        indices_.push_back(idx[0]);
+                        indices_.push_back(idx[3]);
+                        indices_.push_back(idx[2]);
+                        indices_.push_back(idx[2]);
+                        indices_.push_back(idx[1]);
+                        indices_.push_back(idx[0]);
                     } else {
-                        indices_.push_back(base + 1);
-                        indices_.push_back(base);
-                        indices_.push_back(base + 3);
-                        indices_.push_back(base + 3);
-                        indices_.push_back(base + 2);
-                        indices_.push_back(base + 1);
+                        indices_.push_back(idx[1]);
+                        indices_.push_back(idx[0]);
+                        indices_.push_back(idx[3]);
+                        indices_.push_back(idx[3]);
+                        indices_.push_back(idx[2]);
+                        indices_.push_back(idx[1]);
                     }
                 }
             }

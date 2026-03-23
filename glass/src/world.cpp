@@ -24,6 +24,11 @@ void World::destroy(Entity e) {
         return;
     }
 
+    // Fire callback before removing components (lets listeners capture GPU resources)
+    if (on_destroy_) {
+        on_destroy_(*this, e);
+    }
+
     // Remove from all pools
     for (auto& [type, pool] : pools_) {
         pool->remove(e);

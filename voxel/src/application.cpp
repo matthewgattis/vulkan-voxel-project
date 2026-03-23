@@ -21,7 +21,7 @@ Application::Application()
           glass::Shader::load(vk::ShaderStageFlagBits::eFragment,
                               std::filesystem::path{SHADER_DIR} / "triangle.frag.spv"),
           renderer_.frame_descriptor_layout())}
-    , terrain_{engine_, world_, material_}
+    , chunk_manager_{engine_, world_, material_, terrain_generator_}
     , camera_entity_{world_.create()}
     , camera_controller_{
           glm::vec3{32.0f, -20.0f, 40.0f},
@@ -36,9 +36,13 @@ Application::Application()
     world_.add<glass::Velocity>(camera_entity_, glass::Velocity{});
     world_.add<glass::CameraComponent>(camera_entity_, glass::CameraComponent{std::move(camera)});
     renderer_.set_camera(camera_entity_);
+    renderer_.bind_world(world_);
+
+    // Set up event callback
+    engine_.set_event_callback([this](const SDL_Event& event) { handle_event(event); });
 
     // Set the initial camera transform via one controller update
-    camera_controller_.update(engine_, world_, camera_entity_);
+    camera_controller_.update(0.0f, 0.0f, 0.0f, engine_.keyboard_state(), world_, camera_entity_);
 
     spdlog::info("Application initialized");
 }
@@ -47,9 +51,51 @@ Application::~Application() {
     spdlog::info("Application shutting down");
 }
 
+void Application::handle_event(const SDL_Event& event) {
+    // Forward to ImGui when mouse is not captured
+    if (engine_.imgui_enabled() && !mouse_captured_) {
+        engine_.imgui_process_event(event);
+    }
+
+    // Toggle ImGui with F3
+    if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_F3 &&
+        !event.key.repeat) {
+        engine_.set_imgui_enabled(!engine_.imgui_enabled());
+    }
+
+    // Mouse capture
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
+        if (!engine_.imgui_enabled() || !ImGui::GetIO().WantCaptureMouse) {
+            mouse_captured_ = true;
+            mouse_capture_first_frame_ = true;
+            SDL_SetWindowRelativeMouseMode(engine_.window(), true);
+        }
+    }
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
+        mouse_captured_ = false;
+        SDL_SetWindowRelativeMouseMode(engine_.window(), false);
+    }
+
+    // Accumulate mouse motion
+    if (event.type == SDL_EVENT_MOUSE_MOTION && mouse_captured_ && !mouse_capture_first_frame_) {
+        mouse_dx_ += event.motion.xrel;
+        mouse_dy_ += event.motion.yrel;
+    }
+}
+
 void Application::run() {
     while (engine_.poll_events()) {
-        camera_controller_.update(engine_, world_, camera_entity_);
+        // Update camera with accumulated input
+        camera_controller_.update(engine_.delta_time(), mouse_dx_, mouse_dy_,
+                                  engine_.keyboard_state(), world_, camera_entity_);
+
+        // Reset per-frame mouse accumulators
+        mouse_dx_ = 0.0f;
+        mouse_dy_ = 0.0f;
+        mouse_capture_first_frame_ = false;
+
+        // Load/unload chunks around camera
+        chunk_manager_.update(camera_controller_.position());
 
         // Update FPS counter once per second
         fps_timer_ += engine_.delta_time();

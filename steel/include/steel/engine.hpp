@@ -10,6 +10,9 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -18,6 +21,18 @@ namespace steel {
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
 class Engine {
+    // Type-erased resource holder (must precede defer_destroy template)
+    struct IDeferredResource { virtual ~IDeferredResource() = default; };
+    template<typename T>
+    struct DeferredResource : IDeferredResource {
+        T resource;
+        DeferredResource(T&& r) : resource(std::move(r)) {}
+    };
+    struct DeferredEntry {
+        std::unique_ptr<IDeferredResource> resource;
+        uint32_t frames_remaining;
+    };
+
 public:
     Engine(std::string_view title);
     ~Engine();
@@ -28,6 +43,11 @@ public:
     // Returns true if the application should keep running.
     bool poll_events();
 
+    // Optional per-event callback. Called for every SDL event during poll_events().
+    // Engine handles quit and resize internally; everything else is forwarded.
+    using EventCallback = std::function<void(const SDL_Event&)>;
+    void set_event_callback(EventCallback callback) { event_callback_ = std::move(callback); }
+
     // Frame rendering interface. begin_frame returns the command buffer
     // for recording into, or nullptr if the swapchain image could not
     // be acquired (e.g. window minimized). end_frame submits and presents.
@@ -36,11 +56,23 @@ public:
 
     void wait_idle();
 
+    // Deferred resource destruction. Holds any moveable resource for
+    // MAX_FRAMES_IN_FLIGHT + 1 frames, then drops it (destructor runs).
+    // Use this when destroying GPU resources that in-flight frames may reference.
+    template<typename T>
+    void defer_destroy(T resource) {
+        deferred_.push_back({
+            std::make_unique<DeferredResource<T>>(std::move(resource)),
+            MAX_FRAMES_IN_FLIGHT + 1
+        });
+    }
+
     // ImGui
     void imgui_begin()  { imgui_pass_.begin(); }
     void imgui_end()    { imgui_pass_.end(); }
     bool imgui_enabled() const { return imgui_pass_.enabled(); }
     void set_imgui_enabled(bool enabled) { imgui_pass_.set_enabled(enabled); }
+    void imgui_process_event(const SDL_Event& event) { imgui_pass_.process_event(event); }
 
     // Accessors
     const vk::raii::Device&     device()      const { return device_; }
@@ -54,12 +86,13 @@ public:
     uint32_t                    graphics_family() const { return graphics_family_index_; }
     uint32_t                    current_frame()   const { return current_frame_; }
     VmaAllocator                allocator()       const { return allocator_; }
+    SDL_Window*                 window()          const { return window_; }
 
-    // Input state
-    const bool* keyboard_state() const;
-    float mouse_dx() const { return mouse_dx_; }
-    float mouse_dy() const { return mouse_dy_; }
+    // Timing
     float delta_time() const { return delta_time_; }
+
+    // Input (thin SDL wrappers)
+    const bool* keyboard_state() const;
 
 private:
     void create_instance(std::string_view title);
@@ -72,6 +105,7 @@ private:
     void recreate_swapchain();
 
     bool is_device_suitable(const vk::raii::PhysicalDevice& dev) const;
+    void flush_deferred();
 
     // SDL
     SDL_Window* window_ = nullptr;
@@ -109,13 +143,15 @@ private:
     uint32_t current_image_index_ = 0;
     bool framebuffer_resized_ = false;
 
-    // Input state
-    float mouse_dx_ = 0.0f;
-    float mouse_dy_ = 0.0f;
+    // Deferred destruction queue
+    std::deque<DeferredEntry> deferred_;
+
+    // Timing
     float delta_time_ = 0.0f;
     uint64_t last_frame_time_ = 0;
-    bool mouse_captured_ = false;
-    bool mouse_capture_first_frame_ = false;
+
+    // Event callback
+    EventCallback event_callback_;
 };
 
 } // namespace steel

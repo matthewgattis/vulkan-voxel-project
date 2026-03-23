@@ -17,6 +17,8 @@ class Renderer {
 public:
     explicit Renderer(steel::Engine& engine);
 
+    void bind_world(World& world);
+
     void set_camera(Entity camera) { camera_ = camera; }
     Entity camera() const { return camera_; }
 

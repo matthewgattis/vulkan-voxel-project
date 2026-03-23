@@ -1,7 +1,6 @@
 #include <voxel/camera_controller.hpp>
 
 #include <glass/components.hpp>
-#include <steel/engine.hpp>
 
 #include <SDL3/SDL_scancode.h>
 
@@ -19,13 +18,11 @@ CameraController::CameraController(glm::vec3 position, float yaw, float pitch)
 {
 }
 
-void CameraController::update(steel::Engine& engine, glass::World& world, glass::Entity camera_entity) {
-    float dt = engine.delta_time();
-    const bool* keys = engine.keyboard_state();
-
+void CameraController::update(float dt, float mouse_dx, float mouse_dy, const bool* keys,
+                               glass::World& world, glass::Entity camera_entity) {
     // Mouse look: yaw around Z (world up), pitch around local X (right)
-    yaw_ -= engine.mouse_dx() * MOUSE_SENSITIVITY;
-    pitch_ -= engine.mouse_dy() * MOUSE_SENSITIVITY;
+    yaw_ -= mouse_dx * MOUSE_SENSITIVITY;
+    pitch_ -= mouse_dy * MOUSE_SENSITIVITY;
     pitch_ = std::clamp(pitch_, -MAX_PITCH, MAX_PITCH);
 
     // Base rotation: camera looks along local -Z with +Y up (OpenGL convention).

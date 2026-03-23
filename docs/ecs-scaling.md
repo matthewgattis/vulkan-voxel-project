@@ -29,7 +29,7 @@ Instead of one flat `vector<optional<size_t>>` for the sparse side, you can **pa
 This is what **Unity DOTS** (and Flecs, another popular ECS) uses. Instead of storing each component type in its own pool, entities are grouped by their **archetype** — the exact set of component types they have.
 
 An archetype is essentially a table:
-- Columns are component types (e.g., Transform, MeshComponent, MaterialComponent)
+- Columns are component types (e.g., Transform, GeometryComponent, MaterialComponent)
 - Rows are entities with exactly that combination
 - All data for a row is stored contiguously or in parallel arrays within the archetype
 

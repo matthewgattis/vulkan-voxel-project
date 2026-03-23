@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions with ECS) -> `voxel` (application). The application renders procedurally generated voxel terrain using simplex noise, with per-vertex ambient occlusion, half-Lambert lighting, and a spectator camera with velocity-based physics. Always-on FXAA 3.11 anti-aliasing is applied as a post-processing pass inside `steel::Engine`.
+Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions with ECS) -> `voxel` (application). The application renders procedurally generated voxel terrain using simplex noise, with multithreaded chunk loading, per-vertex ambient occlusion, vertex welding, half-Lambert lighting, and a spectator camera with velocity-based physics. Always-on FXAA 3.11 anti-aliasing and Dear ImGui debug overlay are applied as post-processing passes inside `steel::Engine`.
 
 ## Build
 
@@ -41,19 +41,22 @@ Each subdirectory has its own `CMakeLists.txt`.
 ## Key Interfaces
 
 ### steel::Engine
-- `Engine(title, width, height)` — creates window and initializes Vulkan. Auto-selects largest fitting 4:3 resolution from predefined list for the primary display.
+- `Engine(title)` — creates window and initializes Vulkan. Auto-selects largest fitting 4:3 resolution from predefined list for the primary display.
 - High-DPI support via `SDL_WINDOW_HIGH_PIXEL_DENSITY`
-- `begin_frame()` -> `const vk::raii::CommandBuffer*` (nullptr if frame unavailable). Sets dynamic viewport and scissor from the current extent.
+- `begin_frame()` -> `const vk::raii::CommandBuffer*` (nullptr if frame unavailable). Sets dynamic viewport and scissor from the current extent. Flushes deferred destruction queue.
 - `end_frame()` — submits and presents
 - FXAA 3.11 post-processing: the scene renders to an offscreen target, then an FXAA fullscreen pass (quality preset 12 with edge endpoint search) reads it via a combined image sampler descriptor and writes to the swapchain. The FXAA pipeline is built directly, separate from `PipelineBuilder`. The `begin_frame()`/`end_frame()` API is unchanged — glass and voxel are unaware of FXAA.
 - `wait_idle()` — waits for device idle (used for clean shutdown)
-- `poll_events()` -> `bool` (false = quit requested). Handles input: mouse capture on left-click drag (with first-frame motion discard), delta time computation, keyboard state.
+- `poll_events()` -> `bool` (false = quit requested). Handles quit, resize, and delta time. Forwards all other events via optional event callback.
+- `set_event_callback(fn)` — optional per-event callback for application-level input handling
 - `keyboard_state()` -> `const bool*` — SDL keyboard state array
-- `mouse_dx()`, `mouse_dy()` — mouse deltas (only while left button held)
 - `delta_time()` — frame delta in seconds, clamped to 0.1s max
 - `current_frame()` — current frame-in-flight index
+- `defer_destroy<T>(resource)` — type-erased deferred destruction, holds resource for `MAX_FRAMES_IN_FLIGHT + 1` frames
+- `window()` -> `SDL_Window*`
+- ImGui: `imgui_begin()`, `imgui_end()`, `imgui_enabled()`, `set_imgui_enabled()`, `imgui_process_event()`
 - Frames in flight: `MAX_FRAMES_IN_FLIGHT` (2, defined in engine.hpp)
-- Accessors: `device()`, `physical_device()`, `render_pass()`, `extent()`, `command_pool()`, `graphics_queue()`, `graphics_family()`, `color_format()`, `depth_format()`
+- Accessors: `device()`, `physical_device()`, `render_pass()`, `extent()`, `command_pool()`, `graphics_queue()`, `graphics_family()`, `color_format()`, `depth_format()`, `allocator()`
 
 ### steel::UniformBuffer\<T\>
 - Header-only template encapsulating descriptor set layout, pool, per-frame-in-flight sets, buffers, and persistent mapping
@@ -82,20 +85,21 @@ Each subdirectory has its own `CMakeLists.txt`.
 
 ### glass::Renderer
 - `Renderer(engine)` — creates per-frame UBO for `view_projection`
+- `bind_world(world)` — registers pre-destroy callback for automatic GPU resource cleanup (defers `GeometryComponent`-owned geometry via Engine)
 - `set_camera(entity)` — sets the active camera entity
-- `render_frame(world)` — computes view_projection from camera entity's Transform and CameraComponent, updates UBO, renders all entities with Transform + MeshComponent + MaterialComponent
+- `render_frame(world)` — computes view_projection from camera entity's Transform and CameraComponent, updates UBO, renders all entities with Transform + GeometryComponent + MaterialComponent
 - `frame_descriptor_layout()` — exposes UBO descriptor set layout for material pipeline creation
 
 ### glass::Components
 - `Transform` — `glm::mat4 matrix` (default identity)
-- `MeshComponent` — `const Geometry*` (non-owning)
-- `MaterialComponent` — `const Material*` (non-owning)
+- `GeometryComponent` — `std::unique_ptr<Geometry>` (owns GPU buffers, automatically deferred-destroyed on entity destruction)
+- `MaterialComponent` — `const Material*` (non-owning, long-lived)
 - `Velocity` — `glm::vec3 linear` (default zero)
 - `CameraComponent` — `Camera camera`
 
 ### glass::Entity, World, View
 - `Entity` — lightweight handle: `uint32_t index` + `uint32_t generation`
-- `World` — entity manager with create/destroy, component operations (`add`, `remove`, `get`, `has`), `view<Ts...>()` for multi-component queries
+- `World` — entity manager with create/destroy, component operations (`add`, `remove`, `get`, `has`), `view<Ts...>()` for multi-component queries. Supports `set_on_destroy(callback)` — called before components are removed, enabling GPU resource capture for deferred destruction.
 - `View<Ts...>` — iterates smallest pool, filters by all requested types, `each(fn)` callback
 
 ### glass::Material
@@ -104,25 +108,44 @@ Each subdirectory has its own `CMakeLists.txt`.
 
 ## Voxel Application
 
+### voxel::Application
+- Owns Engine, Renderer, World, Material, ChunkManager, TerrainGenerator, CameraController
+- Sets up Engine event callback for mouse capture, ImGui toggle (F3), and mouse motion accumulation
+- Calls `renderer_.bind_world(world_)` for automatic GPU resource cleanup
+- ImGui debug overlay shows FPS and VMA memory statistics
+
+### voxel::ChunkManager
+- Dynamic chunk loading/unloading around camera within square radius 8 (17x17 grid = 289 columns)
+- Each column spans multiple vertical slices (chunks stacked in Z)
+- Multithreaded: pool of `std::jthread` workers (up to 4) pull from a distance-sorted `std::priority_queue` (closest chunks first)
+- Workers generate voxels + mesh on CPU, push results to main thread via result queue
+- Main thread consumes results: creates `Geometry` (GPU upload) and ECS entities with `GeometryComponent`
+- Workers check atomic camera position to skip stale out-of-range requests
+- Unloading: `world_.destroy(entity)` — GPU resource cleanup is automatic via World's pre-destroy callback
+
 ### voxel::Chunk
 - Pure voxel data: 16x16x16 flat array indexed as `x + y*16 + z*256`
 - `get(x, y, z)`, `set(x, y, z, type)`, `in_bounds()`, chunk coordinates `cx()`, `cy()`, `cz()`
 
 ### voxel::ChunkMesh
 - Implements `glass::Mesh`. Constructor takes a `Chunk` and a `SolidQuery` function
-- Generates vertices/indices with per-face neighbor culling, per-vertex AO, and AO-aware quad triangulation
+- Generates vertices/indices with per-face neighbor culling, per-vertex AO, AO-aware quad triangulation, and vertex welding
+- Vertex welding: FNV-1a hash over raw 36-byte Vertex struct, `std::unordered_map` deduplication. Vertices with identical position, normal, and AO-modulated color are welded.
 - `SolidQuery = std::function<bool(int wx, int wy, int wz)>` — enables cross-chunk neighbor lookups
 - Per-vertex AO: checks 3 adjacent voxels per vertex (2 sides + 1 corner). If both sides solid, AO = 0 (darkest). Brightness mapped as {0.25, 0.5, 0.75, 1.0}.
 - Quad flip: triangulation diagonal chosen based on AO values to avoid visual artifacts
 
-### voxel::Terrain
+### voxel::TerrainGenerator
 - Generates terrain from simplex noise: `terrain_height(wx, wy)` using `glm::simplex`
 - `is_solid_at(wx, wy, wz)` — deterministic world-space solid query from noise (used for cross-chunk culling and AO)
+- `fill_chunk(chunk)` — fills a chunk with voxel data based on noise
+- `column_height()` — number of vertical chunks per column
 - Fill layers: Grass (top), Dirt (1-3 below surface), Stone (deeper)
-- Grid: 4x4 chunks in XY, automatic Z chunk count based on max height
 
 ### voxel::CameraController
 - Spectator camera: WASD movement on XY plane, Space/Shift for Z, left-click-drag for mouse look
+- `update(dt, mouse_dx, mouse_dy, keyboard, world, camera_entity)` — decoupled from Engine
+- `position()` — current camera position (used by ChunkManager for loading radius)
 - Velocity-based physics: acceleration + subtractive friction (proportional to speed), frame-rate independent
 - Sprint: Tab or Ctrl latches sprint on while moving, releases when all move keys released
 - Base speed 11 units/s, sprint speed 22 units/s

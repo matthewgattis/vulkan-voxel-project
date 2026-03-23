@@ -4,15 +4,16 @@
 
 #include <glm/vec3.hpp>
 
-namespace steel { class Engine; }
-
 namespace voxel {
 
 class CameraController {
 public:
     CameraController(glm::vec3 position, float yaw, float pitch);
 
-    void update(steel::Engine& engine, glass::World& world, glass::Entity camera_entity);
+    void update(float dt, float mouse_dx, float mouse_dy, const bool* keyboard,
+                glass::World& world, glass::Entity camera_entity);
+
+    const glm::vec3& position() const { return position_; }
 
 private:
     static constexpr float MOUSE_SENSITIVITY = 0.002f;

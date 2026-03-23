@@ -6,14 +6,16 @@
 
 #include <glm/mat4x4.hpp>
 
+#include <memory>
+
 namespace glass {
 
 struct Transform {
     glm::mat4 matrix{1.0f};
 };
 
-struct MeshComponent {
-    const Geometry* geometry{nullptr};
+struct GeometryComponent {
+    std::unique_ptr<Geometry> geometry;
 };
 
 struct MaterialComponent {

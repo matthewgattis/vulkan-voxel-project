@@ -10,6 +10,17 @@ Renderer::Renderer(steel::Engine& engine)
     , frame_ubo_{steel::UniformBuffer<FrameUBO>::create(
           engine_, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment)} {}
 
+void Renderer::bind_world(World& world) {
+    world.set_on_destroy([this](World& w, Entity e) {
+        if (w.has<GeometryComponent>(e)) {
+            auto& mesh = w.get<GeometryComponent>(e);
+            if (mesh.geometry) {
+                engine_.defer_destroy(std::move(mesh.geometry));
+            }
+        }
+    });
+}
+
 void Renderer::run(World& world) {
     while (engine_.poll_events()) {
         render_frame(world);
@@ -46,8 +57,8 @@ void Renderer::render_frame(World& world) {
 void Renderer::render_ecs(const vk::raii::CommandBuffer& cmd,
                           World& world,
                           uint32_t frame_index) const {
-    world.view<Transform, MeshComponent, MaterialComponent>()
-        .each([&](Entity e, Transform& t, MeshComponent& mesh, MaterialComponent& mat) {
+    world.view<Transform, GeometryComponent, MaterialComponent>()
+        .each([&](Entity e, Transform& t, GeometryComponent& mesh, MaterialComponent& mat) {
             mat.material->bind(cmd);
             frame_ubo_.bind(cmd, mat.material->layout(), 0, frame_index);
             cmd.pushConstants<glm::mat4>(

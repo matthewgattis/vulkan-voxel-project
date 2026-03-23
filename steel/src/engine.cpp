@@ -1,7 +1,5 @@
 #include <steel/engine.hpp>
 
-#include <imgui.h>
-
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -106,6 +104,9 @@ Engine::~Engine() {
     wait_idle();
     imgui_pass_.shutdown();
 
+    // Flush all deferred resources before destroying GPU objects
+    deferred_.clear();
+
     // Destroy swapchain resources (VmaImages) before the allocator
     swapchain_ = Swapchain{};
 
@@ -127,15 +128,20 @@ void Engine::wait_idle() {
     }
 }
 
+void Engine::flush_deferred() {
+    while (!deferred_.empty() && deferred_.front().frames_remaining == 0) {
+        deferred_.pop_front();
+    }
+    for (auto& entry : deferred_) {
+        --entry.frames_remaining;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Event polling
 // ---------------------------------------------------------------------------
 
 bool Engine::poll_events() {
-    // Reset per-frame input accumulators
-    mouse_dx_ = 0.0f;
-    mouse_dy_ = 0.0f;
-
     // Compute delta time
     uint64_t now = SDL_GetTicks();
     delta_time_ = static_cast<float>(now - last_frame_time_) / 1000.0f;
@@ -148,11 +154,6 @@ bool Engine::poll_events() {
 
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-        // Let ImGui process events when mouse is not captured
-        if (imgui_pass_.initialized() && !mouse_captured_) {
-            imgui_pass_.process_event(event);
-        }
-
         if (event.type == SDL_EVENT_QUIT) {
             return false;
         }
@@ -161,30 +162,10 @@ bool Engine::poll_events() {
             framebuffer_resized_ = true;
         }
 
-        // Toggle ImGui with F3
-        if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_F3 &&
-            !event.key.repeat) {
-            imgui_pass_.toggle_enabled();
-        }
-
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
-            // Don't capture mouse if ImGui wants it
-            if (!imgui_pass_.enabled() || !ImGui::GetIO().WantCaptureMouse) {
-                mouse_captured_ = true;
-                mouse_capture_first_frame_ = true;
-                SDL_SetWindowRelativeMouseMode(window_, true);
-            }
-        }
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
-            mouse_captured_ = false;
-            SDL_SetWindowRelativeMouseMode(window_, false);
-        }
-        if (event.type == SDL_EVENT_MOUSE_MOTION && mouse_captured_ && !mouse_capture_first_frame_) {
-            mouse_dx_ += event.motion.xrel;
-            mouse_dy_ += event.motion.yrel;
+        if (event_callback_) {
+            event_callback_(event);
         }
     }
-    mouse_capture_first_frame_ = false;
     return true;
 }
 
@@ -200,6 +181,9 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
     // Wait for this frame's fence
     auto wait_result = device_.waitForFences(*in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
     (void)wait_result;
+
+    // Flush deferred resource destructions now that the fence has signaled
+    flush_deferred();
 
     // Acquire next swapchain image
     vk::Result result;

@@ -11,7 +11,8 @@
 #include <glass/vertex.hpp>
 
 #include <voxel/camera_controller.hpp>
-#include <voxel/terrain.hpp>
+#include <voxel/chunk_manager.hpp>
+#include <voxel/terrain_generator.hpp>
 
 namespace voxel {
 
@@ -28,13 +29,22 @@ public:
     void run();
 
 private:
+    void handle_event(const SDL_Event& event);
+
     steel::Engine engine_;
     glass::Renderer renderer_;
     glass::Material material_;
     glass::World world_;
-    Terrain terrain_;
+    TerrainGenerator terrain_generator_;
+    ChunkManager chunk_manager_;
     glass::Entity camera_entity_;
     CameraController camera_controller_;
+
+    // Input state (managed by event callback)
+    float mouse_dx_ = 0.0f;
+    float mouse_dy_ = 0.0f;
+    bool mouse_captured_ = false;
+    bool mouse_capture_first_frame_ = false;
 
     // FPS display (updated once per second)
     float fps_display_ = 0.0f;

@@ -6,7 +6,8 @@ target_sources(voxel PRIVATE
     src/camera_controller.cpp
     src/chunk.cpp
     src/chunk_mesh.cpp
-    src/terrain.cpp
+    src/chunk_manager.cpp
+    src/terrain_generator.cpp
 )
 
 target_include_directories(voxel PRIVATE

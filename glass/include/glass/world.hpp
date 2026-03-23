@@ -3,6 +3,7 @@
 #include <glass/component_pool.hpp>
 #include <glass/view.hpp>
 
+#include <functional>
 #include <memory>
 #include <typeindex>
 #include <unordered_map>
@@ -12,9 +13,13 @@ namespace glass {
 
 class World {
 public:
+    using DestroyCallback = std::function<void(World&, Entity)>;
+
     Entity create();
     void destroy(Entity e);
     bool alive(Entity e) const;
+
+    void set_on_destroy(DestroyCallback callback) { on_destroy_ = std::move(callback); }
 
     template<typename T>
     T& add(Entity e, T&& component) {
@@ -64,6 +69,7 @@ private:
     uint32_t next_index_{0};
 
     std::unordered_map<std::type_index, std::unique_ptr<IComponentPool>> pools_;
+    DestroyCallback on_destroy_;
 
     template<typename T>
     ComponentPool<T>& ensure_pool() {
