@@ -14,7 +14,7 @@ A work-in-progress Vulkan-based voxel renderer built with C++23 — an experimen
 ## Getting Started
 
 ```bash
-git clone --recurse-submodules <repo-url>
+git clone --recurse-submodules https://github.com/matthewgattis/vulkan-voxel-project.git
 cd vulkan-voxel-project
 
 # Bootstrap vcpkg
