@@ -30,11 +30,11 @@ Each subdirectory has its own `CMakeLists.txt`.
 - **Namespaces**: `steel` for Vulkan RAII wrappers, `glass` for engine abstractions, `voxel` for application code
 - **Vulkan**: Use `vk::raii::` types exclusively (RAII wrappers, no manual cleanup)
 - **Headers**: `<module>/include/<module>/` layout (e.g., `steel/include/steel/engine.hpp`)
-- **Shaders**: GLSL 450 in `voxel/shaders/` and `steel/shaders/`, compiled to SPIR-V by `glslc` at build time. Application shaders use a per-frame UBO (set 0, binding 0) for `view_projection` and push constants (`mat4 model`) for per-object transforms. Steel's internal FXAA shaders (`fullscreen.vert`, `fxaa.frag`) are compiled to SPIR-V and embedded as `constexpr` arrays in a generated header (not checked into git).
+- **Shaders**: GLSL 450 in `voxel/shaders/` and `steel/shaders/`, compiled to SPIR-V by `glslc` at build time. Application shaders use a per-frame UBO (set 0, binding 0) with split `mat4 view` + `mat4 projection` and push constants (`mat4 model`) for per-object transforms. Vertex shader computes half-Lambert lighting and spherical exponential-squared distance fog (using Euclidean distance from view-space position). Fragment shader is passthrough. Steel's internal FXAA shaders (`fullscreen.vert`, `fxaa.frag`) are compiled to SPIR-V and embedded as `constexpr` arrays in a generated header (not checked into git).
 - **Front face**: Default front face is clockwise (`vk::FrontFace::eClockwise`)
-- **Coordinate system**: Z is up, terrain extends across the XY plane
+- **Coordinate system**: Z is up, terrain extends across the XY plane. Sea level at Z ≈ 2, terrain ranges from Z ≈ -53 to Z ≈ 67. Negative chunks supported.
 - **Push constants**: Used for per-object model transforms, pushed per draw call
-- **Descriptor sets**: Set 0 = per-frame UBO (view_projection), set 1 = reserved for per-material (future)
+- **Descriptor sets**: Set 0 = per-frame UBO (view + projection matrices), set 1 = reserved for per-material (future)
 - **Tests**: No GPU required. Test struct layouts, type traits, Vulkan struct construction, and utilities.
 - **Vulkan HPP structs**: Use member assignment or constructor syntax, not C++20 designated initializers (they do not work reliably with Vulkan HPP types)
 
@@ -84,11 +84,12 @@ Each subdirectory has its own `CMakeLists.txt`.
 - View matrix is derived from `glm::inverse(Transform.matrix)` in the renderer
 
 ### glass::Renderer
-- `Renderer(engine)` — creates per-frame UBO for `view_projection`
+- `Renderer(engine)` — creates per-frame UBO with separate view and projection matrices
 - `bind_world(world)` — registers pre-destroy callback for automatic GPU resource cleanup (defers `GeometryComponent`-owned geometry via Engine)
 - `set_camera(entity)` — sets the active camera entity
-- `render_frame(world)` — computes view_projection from camera entity's Transform and CameraComponent, updates UBO, renders all entities with Transform + GeometryComponent + MaterialComponent
+- `render_frame(world)` — computes view/projection from camera entity's Transform and CameraComponent, updates UBO, renders all entities with Transform + GeometryComponent + MaterialComponent
 - `frame_descriptor_layout()` — exposes UBO descriptor set layout for material pipeline creation
+- `FrameUBO` — `mat4 view` + `mat4 projection` (split for spherical fog computation in vertex shader)
 
 ### glass::Components
 - `Transform` — `glm::mat4 matrix` (default identity)
@@ -115,10 +116,13 @@ Each subdirectory has its own `CMakeLists.txt`.
 - ImGui debug overlay shows FPS and VMA memory statistics
 
 ### voxel::ChunkManager
-- Dynamic chunk loading/unloading around camera within square radius 8 (17x17 grid = 289 columns)
-- Each column spans multiple vertical slices (chunks stacked in Z)
-- Multithreaded: pool of `std::jthread` workers (up to 4) pull from a distance-sorted `std::priority_queue` (closest chunks first)
-- Workers generate voxels + mesh on CPU, push results to main thread via result queue
+- Dynamic chunk loading/unloading around camera within square radius 32 (65x65 grid)
+- Each column spans multiple vertical slices (chunks stacked in Z), determined by `TerrainColumn::min_slice()`/`max_slice()`
+- Frustum prioritization: extracts 6 planes from VP matrix (Gribb/Hartmann), tests column AABB. In-frustum chunks load before out-of-frustum, distance as tiebreaker
+- `update(camera_pos, view_projection)` — queues new columns, consumes results, unloads distant columns
+- Multithreaded: pool of `std::jthread` workers (up to 4) pull from a priority queue
+- Workers create `TerrainColumn`, iterate `min_slice..max_slice`, generate voxels + mesh on CPU, push results to main thread via result queue
+- Workers pass two queries to `ChunkMesh`: `is_opaque_at` for face culling, `is_solid_at` for AO
 - Main thread consumes results: creates `Geometry` (GPU upload) and ECS entities with `GeometryComponent`
 - Workers check atomic camera position to skip stale out-of-range requests
 - Unloading: `world_.destroy(entity)` — GPU resource cleanup is automatic via World's pre-destroy callback
@@ -128,19 +132,27 @@ Each subdirectory has its own `CMakeLists.txt`.
 - `get(x, y, z)`, `set(x, y, z, type)`, `in_bounds()`, chunk coordinates `cx()`, `cy()`, `cz()`
 
 ### voxel::ChunkMesh
-- Implements `glass::Mesh`. Constructor takes a `Chunk` and a `SolidQuery` function
+- Implements `glass::Mesh`. Constructor takes a `Chunk` and two `VoxelQuery` functions: `is_opaque_at` (face culling) and `is_solid_at` (AO)
+- `VoxelQuery = std::function<bool(int wx, int wy, int wz)>` — enables cross-chunk neighbor lookups
+- Face culling uses `is_opaque_at` (terrain + water block faces), AO uses `is_solid_at` (only terrain, water doesn't cast AO shadows)
 - Generates vertices/indices with per-face neighbor culling, per-vertex AO, AO-aware quad triangulation, and vertex welding
 - Vertex welding: FNV-1a hash over raw 36-byte Vertex struct, `std::unordered_map` deduplication. Vertices with identical position, normal, and AO-modulated color are welded.
-- `SolidQuery = std::function<bool(int wx, int wy, int wz)>` — enables cross-chunk neighbor lookups
 - Per-vertex AO: checks 3 adjacent voxels per vertex (2 sides + 1 corner). If both sides solid, AO = 0 (darkest). Brightness mapped as {0.25, 0.5, 0.75, 1.0}.
 - Quad flip: triangulation diagonal chosen based on AO values to avoid visual artifacts
 
 ### voxel::TerrainGenerator
-- Generates terrain from simplex noise: `terrain_height(wx, wy)` using `glm::simplex`
-- `is_solid_at(wx, wy, wz)` — deterministic world-space solid query from noise (used for cross-chunk culling and AO)
-- `fill_chunk(chunk)` — fills a chunk with voxel data based on noise
-- `column_height()` — number of vertical chunks per column
-- Fill layers: Grass (top), Dirt (1-3 below surface), Stone (deeper)
+- 6-octave fBm simplex noise terrain: `height_at(wx, wy)` using `glm::simplex` (base frequency 0.005, lacunarity 2.0, persistence 0.5, amplitude 120)
+- Power curve (`pow(n, 2.0)`) applied only above sea level for sharper peaks with smooth underwater terrain
+- `snow_line_at(wx, wy)` — single octave simplex at 0.003 scale, ±15 variation around SNOW_LINE
+- `is_solid_at(wx, wy, wz)` — terrain-only solid query (for AO), uses HEIGHT_BASE as floor
+- `is_opaque_at(wx, wy, wz)` — includes water (for face culling), air below sea level is water
+- Constants: `SEA_LEVEL` (2.0), `SNOW_LINE` (35.0), `HEIGHT_BASE` (-53.0)
+
+### voxel::TerrainColumn
+- `TerrainColumn(cx, cy, generator)` — precomputes 16x16 heightmap, slope (central finite differences), and snow line per column
+- `min_slice()`/`max_slice()` — Z slice range that needs generation (supports negative chunks)
+- `fill_chunk(chunk)` — fills with biome logic: Grass (surface above water), Dirt (below grass or underwater surface), Stone (deep), Sand (slope-aware near sea level), Snow (above noise-varying snow line on gentle slopes), Water (air below sea level)
+- `is_solid_at(lx, ly, wz)`, `is_opaque_at(lx, ly, wz)` — per-column queries using cached heightmap
 
 ### voxel::CameraController
 - Spectator camera: WASD movement on XY plane, Space/Shift for Z, left-click-drag for mouse look

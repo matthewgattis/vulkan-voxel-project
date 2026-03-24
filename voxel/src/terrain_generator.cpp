@@ -27,17 +27,34 @@ float TerrainGenerator::height_at(float wx, float wy) const {
     }
 
     float n = (total / max_amplitude + 1.0f) * 0.5f;
+
+    // Sea level in normalized space (before power curve)
+    float sea_n = -HEIGHT_BASE / HEIGHT_AMP;
+
+    // Apply power curve only above sea level
+    if (n > sea_n) {
+        float above = (n - sea_n) / (1.0f - sea_n);  // normalize above-sea portion to [0,1]
+        above = std::pow(above, 2.0f);
+        n = sea_n + above * (1.0f - sea_n);
+    }
+
     return HEIGHT_BASE + n * HEIGHT_AMP;
 }
 
+float TerrainGenerator::snow_line_at(float wx, float wy) const {
+    float n = glm::simplex(glm::vec2(wx * 0.003f, wy * 0.003f));
+    return SNOW_LINE + n * 15.0f;
+}
+
 bool TerrainGenerator::is_solid_at(int wx, int wy, int wz) const {
-    if (wz < 0) return true;
-    return static_cast<float>(wz) < height_at(static_cast<float>(wx), static_cast<float>(wy));
+    float fwz = static_cast<float>(wz);
+    if (fwz < HEIGHT_BASE) return true;
+    return fwz < height_at(static_cast<float>(wx), static_cast<float>(wy));
 }
 
 bool TerrainGenerator::is_opaque_at(int wx, int wy, int wz) const {
-    if (wz < 0) return true;
     float fwz = static_cast<float>(wz);
+    if (fwz < HEIGHT_BASE) return true;
     float h = height_at(static_cast<float>(wx), static_cast<float>(wy));
     return fwz < h || fwz < SEA_LEVEL;
 }
@@ -65,6 +82,8 @@ TerrainColumn::TerrainColumn(int cx, int cy, const TerrainGenerator& generator)
             float hx = generator.height_at(wx + 1.0f, wy) - generator.height_at(wx - 1.0f, wy);
             float hy = generator.height_at(wx, wy + 1.0f) - generator.height_at(wx, wy - 1.0f);
             slopes_[lx + ly * CHUNK_SIZE] = std::sqrt(hx * hx + hy * hy) * 0.5f;
+
+            snow_lines_[lx + ly * CHUNK_SIZE] = generator.snow_line_at(wx, wy);
         }
     }
 
@@ -72,7 +91,8 @@ TerrainColumn::TerrainColumn(int cx, int cy, const TerrainGenerator& generator)
     float effective_max = std::max(max_h, TerrainGenerator::SEA_LEVEL);
 
     // Slices where the surface passes through: need one below min for AO/culling
-    min_slice_ = std::max(0, static_cast<int>(std::floor(min_h)) / CHUNK_SIZE - 1);
+    int floor_z = static_cast<int>(std::floor(min_h));
+    min_slice_ = (floor_z < 0 ? (floor_z - CHUNK_SIZE + 1) / CHUNK_SIZE : floor_z / CHUNK_SIZE) - 1;
     max_slice_ = static_cast<int>(std::ceil(effective_max)) / CHUNK_SIZE;
 }
 
@@ -88,7 +108,7 @@ void TerrainColumn::fill_chunk(Chunk& chunk) const {
 
             // Sand band: extends further on gentle slopes
             // Below sea level: sand in shallows
-            float above_band = std::max(0.0f, 3.0f - slope * 2.0f);
+            float above_band = std::max(0.0f, 2.0f - slope * 1.0f);
             float below_band = 2.0f;
 
             for (int lz = 0; lz < CHUNK_SIZE; ++lz) {
@@ -100,9 +120,15 @@ void TerrainColumn::fill_chunk(Chunk& chunk) const {
                     bool in_sand_zone = (dist_to_sea >= 0.0f && dist_to_sea < above_band) ||
                                         (dist_to_sea < 0.0f && dist_to_sea > -below_band);
 
+                    bool above_snow = height > snow_lines_[idx];
+                    // Snow covers gentle slopes; steeper slopes get less snow
+                    float snow_depth = std::max(0.0f, 3.0f - slope * 1.5f);
+
                     VoxelType type;
                     if (in_sand_zone && depth <= 4.0f) {
                         type = VoxelType::Sand;
+                    } else if (above_snow && depth <= snow_depth) {
+                        type = VoxelType::Snow;
                     } else if (depth <= 1.0f) {
                         type = underwater ? VoxelType::Dirt : VoxelType::Grass;
                     } else if (depth <= 4.0f) {
@@ -121,13 +147,14 @@ void TerrainColumn::fill_chunk(Chunk& chunk) const {
 }
 
 bool TerrainColumn::is_solid_at(int lx, int ly, int wz) const {
-    if (wz < 0) return true;
-    return static_cast<float>(wz) < heights_[lx + ly * CHUNK_SIZE];
+    float fwz = static_cast<float>(wz);
+    if (fwz < TerrainGenerator::HEIGHT_BASE) return true;
+    return fwz < heights_[lx + ly * CHUNK_SIZE];
 }
 
 bool TerrainColumn::is_opaque_at(int lx, int ly, int wz) const {
-    if (wz < 0) return true;
     float fwz = static_cast<float>(wz);
+    if (fwz < TerrainGenerator::HEIGHT_BASE) return true;
     return fwz < heights_[lx + ly * CHUNK_SIZE] || fwz < TerrainGenerator::SEA_LEVEL;
 }
 

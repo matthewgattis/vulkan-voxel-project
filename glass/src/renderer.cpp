@@ -48,7 +48,7 @@ void Renderer::render_frame(World& world) {
 
     auto* cmd = engine_.begin_frame();
     if (cmd) {
-        frame_ubo_.update(engine_.current_frame(), FrameUBO{view_projection});
+        frame_ubo_.update(engine_.current_frame(), FrameUBO{view, cc.camera.projection()});
         render_ecs(*cmd, world, engine_.current_frame());
         engine_.end_frame();
     }

@@ -17,9 +17,9 @@ public:
 
 private:
     static constexpr float MOUSE_SENSITIVITY = 0.002f;
-    static constexpr float FRICTION = 8.0f;
-    static constexpr float MAX_SPEED = 11.0f;
-    static constexpr float SPRINT_SPEED = 22.0f;
+    static constexpr float FRICTION = 4.0f;
+    static constexpr float MAX_SPEED = 22.0f;
+    static constexpr float SPRINT_SPEED = 44.0f;
     static constexpr float MAX_PITCH = 1.553f; // ~89 degrees
 
     glm::vec3 position_;

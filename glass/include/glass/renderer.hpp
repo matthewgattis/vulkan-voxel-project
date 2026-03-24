@@ -10,7 +10,8 @@
 namespace glass {
 
 struct FrameUBO {
-    glm::mat4 view_projection;
+    glm::mat4 view;
+    glm::mat4 projection;
 };
 
 class Renderer {

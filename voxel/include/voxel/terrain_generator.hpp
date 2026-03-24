@@ -8,9 +8,12 @@ namespace voxel {
 
 class TerrainGenerator {
 public:
-    static constexpr float SEA_LEVEL = 85.0f;
+    static constexpr float SEA_LEVEL = 2.0f;
+    static constexpr float SNOW_LINE = 35.0f;
+    static constexpr float HEIGHT_BASE = -53.0f;
 
     float height_at(float wx, float wy) const;
+    float snow_line_at(float wx, float wy) const;
     bool is_solid_at(int wx, int wy, int wz) const;
     bool is_opaque_at(int wx, int wy, int wz) const;
 
@@ -19,8 +22,7 @@ private:
     static constexpr float BASE_FREQUENCY = 0.005f;
     static constexpr float LACUNARITY = 2.0f;
     static constexpr float PERSISTENCE = 0.5f;
-    static constexpr float HEIGHT_BASE = 48.0f;
-    static constexpr float HEIGHT_AMP = 80.0f;
+    static constexpr float HEIGHT_AMP = 120.0f;
 };
 
 class TerrainColumn {
@@ -39,6 +41,7 @@ private:
     int min_slice_, max_slice_;
     std::array<float, CHUNK_SIZE * CHUNK_SIZE> heights_;
     std::array<float, CHUNK_SIZE * CHUNK_SIZE> slopes_;
+    std::array<float, CHUNK_SIZE * CHUNK_SIZE> snow_lines_;
 };
 
 } // namespace voxel

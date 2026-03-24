@@ -10,6 +10,7 @@ enum class VoxelType : uint8_t {
     Dirt,
     Stone,
     Sand,
+    Snow,
     Water,
 };
 
@@ -27,6 +28,7 @@ inline glm::vec3 voxel_color(VoxelType type) {
         case VoxelType::Dirt:  return {0.55f, 0.36f, 0.20f};
         case VoxelType::Stone: return {0.55f, 0.55f, 0.55f};
         case VoxelType::Sand:  return {0.85f, 0.78f, 0.55f};
+        case VoxelType::Snow:  return {0.95f, 0.95f, 0.97f};
         case VoxelType::Water: return {0.20f, 0.40f, 0.75f};
         default:               return {0.0f, 0.0f, 0.0f};
     }
