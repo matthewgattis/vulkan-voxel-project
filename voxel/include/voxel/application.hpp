@@ -43,6 +43,8 @@ private:
     // Input state (managed by event callback)
     float mouse_dx_ = 0.0f;
     float mouse_dy_ = 0.0f;
+    float mouse_capture_x_ = 0.0f;
+    float mouse_capture_y_ = 0.0f;
     bool mouse_captured_ = false;
     bool mouse_capture_first_frame_ = false;
 

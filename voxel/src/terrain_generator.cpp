@@ -26,19 +26,13 @@ float TerrainGenerator::height_at(float wx, float wy) const {
         frequency *= LACUNARITY;
     }
 
-    float n = (total / max_amplitude + 1.0f) * 0.5f;
+    float n = total / max_amplitude;
 
-    // Sea level in normalized space (before power curve)
-    float sea_n = -HEIGHT_BASE / HEIGHT_AMP;
-
-    // Apply power curve only above sea level
-    if (n > sea_n) {
-        float above = (n - sea_n) / (1.0f - sea_n);  // normalize above-sea portion to [0,1]
-        above = std::pow(above, 2.0f);
-        n = sea_n + above * (1.0f - sea_n);
+    if (n > 0.0f) {
+        n = glm::pow(n, 2.0f);
     }
 
-    return HEIGHT_BASE + n * HEIGHT_AMP;
+    return n * HEIGHT_AMP;
 }
 
 float TerrainGenerator::snow_line_at(float wx, float wy) const {
@@ -48,13 +42,11 @@ float TerrainGenerator::snow_line_at(float wx, float wy) const {
 
 bool TerrainGenerator::is_solid_at(int wx, int wy, int wz) const {
     float fwz = static_cast<float>(wz);
-    if (fwz < HEIGHT_BASE) return true;
     return fwz < height_at(static_cast<float>(wx), static_cast<float>(wy));
 }
 
 bool TerrainGenerator::is_opaque_at(int wx, int wy, int wz) const {
     float fwz = static_cast<float>(wz);
-    if (fwz < HEIGHT_BASE) return true;
     float h = height_at(static_cast<float>(wx), static_cast<float>(wy));
     return fwz < h || fwz < SEA_LEVEL;
 }
@@ -120,18 +112,27 @@ void TerrainColumn::fill_chunk(Chunk& chunk) const {
                     bool in_sand_zone = (dist_to_sea >= 0.0f && dist_to_sea < above_band) ||
                                         (dist_to_sea < 0.0f && dist_to_sea > -below_band);
 
-                    bool above_snow = height > snow_lines_[idx];
+                    float snow_line = snow_lines_[idx];
+                    bool above_snow = height > snow_line;
                     // Snow covers gentle slopes; steeper slopes get less snow
                     float snow_depth = std::max(0.0f, 3.0f - slope * 1.5f);
+
+                    // Grass thins out approaching the snow line — exposed stone above tree line
+                    // High-frequency noise breaks up the transition
+                    float wx = static_cast<float>(cx_ * CHUNK_SIZE + lx);
+                    float wy = static_cast<float>(cy_ * CHUNK_SIZE + ly);
+                    float tree_noise = glm::simplex(glm::vec2(wx * 0.1f, wy * 0.1f)) * 5.0f;
+                    float tree_line = snow_line - 10.0f + tree_noise;
+                    bool has_grass = !underwater && height <= tree_line;
 
                     VoxelType type;
                     if (in_sand_zone && depth <= 4.0f) {
                         type = VoxelType::Sand;
                     } else if (above_snow && depth <= snow_depth) {
                         type = VoxelType::Snow;
-                    } else if (depth <= 1.0f) {
-                        type = underwater ? VoxelType::Dirt : VoxelType::Grass;
-                    } else if (depth <= 4.0f) {
+                    } else if (depth <= 1.0f && has_grass) {
+                        type = VoxelType::Grass;
+                    } else if (depth <= 4.0f && has_grass) {
                         type = VoxelType::Dirt;
                     } else {
                         type = VoxelType::Stone;
@@ -148,13 +149,11 @@ void TerrainColumn::fill_chunk(Chunk& chunk) const {
 
 bool TerrainColumn::is_solid_at(int lx, int ly, int wz) const {
     float fwz = static_cast<float>(wz);
-    if (fwz < TerrainGenerator::HEIGHT_BASE) return true;
     return fwz < heights_[lx + ly * CHUNK_SIZE];
 }
 
 bool TerrainColumn::is_opaque_at(int lx, int ly, int wz) const {
     float fwz = static_cast<float>(wz);
-    if (fwz < TerrainGenerator::HEIGHT_BASE) return true;
     return fwz < heights_[lx + ly * CHUNK_SIZE] || fwz < TerrainGenerator::SEA_LEVEL;
 }
 

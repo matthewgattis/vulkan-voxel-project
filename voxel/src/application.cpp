@@ -66,6 +66,7 @@ void Application::handle_event(const SDL_Event& event) {
     // Mouse capture
     if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
         if (!engine_.imgui_enabled() || !ImGui::GetIO().WantCaptureMouse) {
+            SDL_GetMouseState(&mouse_capture_x_, &mouse_capture_y_);
             mouse_captured_ = true;
             mouse_capture_first_frame_ = true;
             SDL_SetWindowRelativeMouseMode(engine_.window(), true);
@@ -74,6 +75,7 @@ void Application::handle_event(const SDL_Event& event) {
     if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
         mouse_captured_ = false;
         SDL_SetWindowRelativeMouseMode(engine_.window(), false);
+        SDL_WarpMouseInWindow(engine_.window(), mouse_capture_x_, mouse_capture_y_);
     }
 
     // Accumulate mouse motion

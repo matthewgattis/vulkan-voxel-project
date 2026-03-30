@@ -9,8 +9,8 @@ namespace voxel {
 class TerrainGenerator {
 public:
     static constexpr float SEA_LEVEL = 2.0f;
-    static constexpr float SNOW_LINE = 35.0f;
-    static constexpr float HEIGHT_BASE = -53.0f;
+    static constexpr float SNOW_LINE = 50.0f;
+    static constexpr float HEIGHT_AMP = 120.0f;
 
     float height_at(float wx, float wy) const;
     float snow_line_at(float wx, float wy) const;
@@ -19,10 +19,9 @@ public:
 
 private:
     static constexpr int OCTAVES = 6;
-    static constexpr float BASE_FREQUENCY = 0.005f;
+    static constexpr float BASE_FREQUENCY = 0.002f;
     static constexpr float LACUNARITY = 2.0f;
     static constexpr float PERSISTENCE = 0.5f;
-    static constexpr float HEIGHT_AMP = 120.0f;
 };
 
 class TerrainColumn {
