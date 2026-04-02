@@ -20,6 +20,19 @@ namespace steel {
 
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
+struct EngineConfig {
+    std::string_view title;
+    std::vector<std::string> extra_instance_extensions;
+    std::vector<std::string> extra_device_extensions;
+    // Vulkan API version to request. 0 = default (VK_API_VERSION_1_3).
+    // Set to match XR runtime's max supported version when using OpenXR.
+    uint32_t vulkan_api_version = 0;
+    // Called after VkInstance creation to query the required physical device.
+    // Used by OpenXR (xrGetVulkanGraphicsDevice2KHR needs a VkInstance).
+    // Return VK_NULL_HANDLE to use default GPU selection.
+    std::function<VkPhysicalDevice(VkInstance)> physical_device_query;
+};
+
 class Engine {
     // Type-erased resource holder (must precede defer_destroy template)
     struct IDeferredResource { virtual ~IDeferredResource() = default; };
@@ -35,6 +48,7 @@ class Engine {
 
 public:
     Engine(std::string_view title);
+    explicit Engine(const EngineConfig& config);
     ~Engine();
 
     Engine(const Engine&) = delete;
@@ -53,6 +67,12 @@ public:
     // be acquired (e.g. window minimized). end_frame submits and presents.
     const vk::raii::CommandBuffer* begin_frame();
     void end_frame();
+
+    // Split frame interface for XR: begin_command_buffer acquires the
+    // swapchain image and begins the command buffer without starting the
+    // scene render pass. begin_scene_pass then starts the offscreen pass.
+    const vk::raii::CommandBuffer* begin_command_buffer();
+    void begin_scene_pass();
 
     void wait_idle();
 
@@ -75,6 +95,7 @@ public:
     void imgui_process_event(const SDL_Event& event) { imgui_pass_.process_event(event); }
 
     // Accessors
+    const vk::raii::Instance&   instance()    const { return instance_; }
     const vk::raii::Device&     device()      const { return device_; }
     const vk::raii::RenderPass& render_pass() const { return swapchain_.render_pass(); }
     vk::Extent2D                extent()      const { return swapchain_.extent(); }
@@ -92,10 +113,13 @@ public:
     float delta_time() const { return delta_time_; }
 
 private:
-    void create_instance(std::string_view title);
+    void init(const EngineConfig& config);
+    void create_instance(std::string_view title,
+                         const std::vector<const char*>& extra_extensions,
+                         uint32_t api_version);
     void create_surface();
-    void pick_physical_device();
-    void create_device();
+    void pick_physical_device(VkPhysicalDevice required);
+    void create_device(const std::vector<const char*>& extra_extensions);
     void create_allocator();
     void create_command_pool();
     void create_sync_objects();

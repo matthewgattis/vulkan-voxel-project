@@ -8,6 +8,7 @@ target_sources(steel PRIVATE
     src/pipeline.cpp
     src/buffer.cpp
     src/vma_impl.cpp
+    src/xr_system.cpp
 )
 
 target_include_directories(steel PUBLIC
@@ -16,6 +17,7 @@ target_include_directories(steel PUBLIC
 
 target_compile_definitions(steel PUBLIC
     VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+    XR_USE_GRAPHICS_API_VULKAN
 )
 
 target_link_libraries(steel PUBLIC
@@ -25,6 +27,7 @@ target_link_libraries(steel PUBLIC
     spdlog::spdlog
     imgui::imgui
     GPUOpen::VulkanMemoryAllocator
+    OpenXR::openxr_loader
 )
 
 # --- Shader compilation (FXAA post-process) ---

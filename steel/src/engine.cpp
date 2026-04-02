@@ -24,7 +24,14 @@ static vk::Format find_supported_depth_format(const vk::raii::PhysicalDevice& de
     return vk::Format::eUndefined;
 }
 
-Engine::Engine(std::string_view title) {
+Engine::Engine(std::string_view title)
+    : Engine(EngineConfig{.title = title}) {}
+
+Engine::Engine(const EngineConfig& config) {
+    init(config);
+}
+
+void Engine::init(const EngineConfig& config) {
     spdlog::info("steel::Engine initializing");
 
     uint32_t width = 1280;
@@ -65,7 +72,7 @@ Engine::Engine(std::string_view title) {
     }
 
     window_ = SDL_CreateWindow(
-        std::string(title).c_str(),
+        std::string(config.title).c_str(),
         static_cast<int>(width),
         static_cast<int>(height),
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -74,10 +81,28 @@ Engine::Engine(std::string_view title) {
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
     }
 
-    create_instance(title);
+    // Convert string vectors to const char* for Vulkan APIs
+    std::vector<const char*> instance_exts;
+    for (const auto& ext : config.extra_instance_extensions) {
+        instance_exts.push_back(ext.c_str());
+    }
+    std::vector<const char*> device_exts;
+    for (const auto& ext : config.extra_device_extensions) {
+        device_exts.push_back(ext.c_str());
+    }
+
+    uint32_t api_version = config.vulkan_api_version ? config.vulkan_api_version : VK_API_VERSION_1_3;
+    create_instance(config.title, instance_exts, api_version);
     create_surface();
-    pick_physical_device();
-    create_device();
+
+    // Query required physical device (e.g. from OpenXR) now that VkInstance exists
+    VkPhysicalDevice required_device = VK_NULL_HANDLE;
+    if (config.physical_device_query) {
+        required_device = config.physical_device_query(static_cast<VkInstance>(*instance_));
+    }
+
+    pick_physical_device(required_device);
+    create_device(device_exts);
     create_allocator();
 
     swapchain_.create(physical_device_, device_, surface_, allocator_, window_,
@@ -176,6 +201,14 @@ bool Engine::poll_events() {
 // ---------------------------------------------------------------------------
 
 const vk::raii::CommandBuffer* Engine::begin_frame() {
+    auto* cmd = begin_command_buffer();
+    if (cmd) {
+        begin_scene_pass();
+    }
+    return cmd;
+}
+
+const vk::raii::CommandBuffer* Engine::begin_command_buffer() {
     // Wait for this frame's fence
     auto wait_result = device_.waitForFences(*in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
     (void)wait_result;
@@ -210,7 +243,12 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
     cmd.reset();
     cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
-    // Begin scene render pass (renders to offscreen target)
+    return &cmd;
+}
+
+void Engine::begin_scene_pass() {
+    auto& cmd = command_buffers_[current_frame_];
+
     std::array<vk::ClearValue, 2> clear_values = {
         vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.53f, 0.71f, 0.92f, 1.0f}}},
         vk::ClearValue{vk::ClearDepthStencilValue{.depth = 1.0f, .stencil = 0}},
@@ -238,8 +276,6 @@ const vk::raii::CommandBuffer* Engine::begin_frame() {
 
     vk::Rect2D scissor{.offset = {0, 0}, .extent = ext};
     cmd.setScissor(0, scissor);
-
-    return &cmd;
 }
 
 void Engine::end_frame() {
@@ -308,20 +344,25 @@ void Engine::end_frame() {
 // Instance
 // ---------------------------------------------------------------------------
 
-void Engine::create_instance(std::string_view title) {
+void Engine::create_instance(std::string_view title,
+                             const std::vector<const char*>& extra_extensions,
+                             uint32_t api_version) {
     std::string title_str{title};
     vk::ApplicationInfo app_info{
         .pApplicationName = title_str.c_str(),
         .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
         .pEngineName = "steel",
         .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-        .apiVersion = VK_API_VERSION_1_3,
+        .apiVersion = api_version,
     };
 
     // Get required extensions from SDL
     uint32_t sdl_ext_count = 0;
     const char* const* sdl_exts = SDL_Vulkan_GetInstanceExtensions(&sdl_ext_count);
     std::vector<const char*> extensions(sdl_exts, sdl_exts + sdl_ext_count);
+
+    // Append any extra extensions (e.g. for OpenXR)
+    extensions.insert(extensions.end(), extra_extensions.begin(), extra_extensions.end());
 
 #ifdef __APPLE__
     extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -361,7 +402,10 @@ void Engine::create_instance(std::string_view title) {
     };
 
     instance_ = vk::raii::Instance{context_, create_info};
-    spdlog::info("Vulkan instance created (API 1.3)");
+    spdlog::info("Vulkan instance created (API {}.{}.{})",
+                 VK_API_VERSION_MAJOR(api_version),
+                 VK_API_VERSION_MINOR(api_version),
+                 VK_API_VERSION_PATCH(api_version));
 }
 
 // ---------------------------------------------------------------------------
@@ -420,10 +464,24 @@ bool Engine::is_device_suitable(const vk::raii::PhysicalDevice& dev) const {
     return true;
 }
 
-void Engine::pick_physical_device() {
+void Engine::pick_physical_device(VkPhysicalDevice required) {
     auto devices = vk::raii::PhysicalDevices{instance_};
     if (devices.empty()) {
         throw std::runtime_error("No Vulkan-capable GPU found");
+    }
+
+    // If the caller (e.g. OpenXR) requires a specific physical device, use it
+    if (required != VK_NULL_HANDLE) {
+        for (auto& dev : devices) {
+            if (static_cast<VkPhysicalDevice>(*dev) == required) {
+                physical_device_ = std::move(dev);
+                auto props = physical_device_.getProperties();
+                spdlog::info("Selected GPU (required by XR): {} ({})",
+                             props.deviceName.data(), vk::to_string(props.deviceType));
+                return;
+            }
+        }
+        throw std::runtime_error("Required physical device not found among available GPUs");
     }
 
     // Filter to suitable devices, then prefer discrete GPU
@@ -464,7 +522,7 @@ void Engine::pick_physical_device() {
 // Logical device
 // ---------------------------------------------------------------------------
 
-void Engine::create_device() {
+void Engine::create_device(const std::vector<const char*>& extra_extensions) {
     // Find queue families
     auto queue_families = physical_device_.getQueueFamilyProperties();
     bool found_graphics = false;
@@ -499,6 +557,10 @@ void Engine::create_device() {
         "VK_KHR_portability_subset",
 #endif
     };
+
+    // Append any extra extensions (e.g. for OpenXR)
+    device_extensions.insert(device_extensions.end(),
+                             extra_extensions.begin(), extra_extensions.end());
 
     vk::PhysicalDeviceFeatures features{};
 

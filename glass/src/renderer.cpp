@@ -8,7 +8,12 @@ namespace glass {
 Renderer::Renderer(steel::Engine& engine)
     : engine_(engine)
     , frame_ubo_{steel::UniformBuffer<FrameUBO>::create(
-          engine_, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment)} {}
+          engine_, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment)}
+    , xr_eye_ubos_{
+          steel::UniformBuffer<FrameUBO>::create(
+              engine_, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment),
+          steel::UniformBuffer<FrameUBO>::create(
+              engine_, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment)} {}
 
 void Renderer::bind_world(World& world) {
     world.set_on_destroy([this](World& w, Entity e) {
@@ -49,18 +54,49 @@ void Renderer::render_frame(World& world) {
     auto* cmd = engine_.begin_frame();
     if (cmd) {
         frame_ubo_.update(engine_.current_frame(), FrameUBO{view, cc.camera.projection()});
-        render_ecs(*cmd, world, engine_.current_frame());
+        render_ecs(*cmd, world, engine_.current_frame(), frame_ubo_);
         engine_.end_frame();
     }
 }
 
+void Renderer::render_xr_eyes(const vk::raii::CommandBuffer& cmd,
+                              World& world,
+                              uint32_t frame_index,
+                              steel::XrFrameState& frame_state,
+                              steel::XrSystem& xr) {
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        xr_eye_ubos_[eye].update(frame_index,
+                                 FrameUBO{frame_state.eyes[eye].view,
+                                          frame_state.eyes[eye].projection});
+
+        xr.begin_eye_render(cmd, eye);
+        render_ecs(cmd, world, frame_index, xr_eye_ubos_[eye]);
+        xr.end_eye_render(cmd, eye);
+    }
+}
+
+void Renderer::render_desktop_companion(const vk::raii::CommandBuffer& cmd,
+                                        World& world,
+                                        uint32_t frame_index,
+                                        const glm::mat4* xr_view) {
+    if (camera_ == null_entity || !world.alive(camera_)) return;
+    if (!world.has<Transform>(camera_) || !world.has<CameraComponent>(camera_)) return;
+
+    auto& cc = world.get<CameraComponent>(camera_);
+
+    glm::mat4 view = xr_view ? *xr_view : glm::inverse(world.get<Transform>(camera_).matrix);
+    frame_ubo_.update(frame_index, FrameUBO{view, cc.camera.projection()});
+    render_ecs(cmd, world, frame_index, frame_ubo_);
+}
+
 void Renderer::render_ecs(const vk::raii::CommandBuffer& cmd,
                           World& world,
-                          uint32_t frame_index) const {
+                          uint32_t frame_index,
+                          const steel::UniformBuffer<FrameUBO>& ubo) const {
     world.view<Transform, GeometryComponent, MaterialComponent>()
         .each([&](Entity e, Transform& t, GeometryComponent& mesh, MaterialComponent& mat) {
             mat.material->bind(cmd);
-            frame_ubo_.bind(cmd, mat.material->layout(), 0, frame_index);
+            ubo.bind(cmd, mat.material->layout(), 0, frame_index);
             cmd.pushConstants<glm::mat4>(
                 *mat.material->layout(),
                 vk::ShaderStageFlagBits::eVertex,

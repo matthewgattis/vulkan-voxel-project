@@ -32,7 +32,8 @@ CameraController::CameraController(glass::EventDispatcher& dispatcher,
     });
 }
 
-void CameraController::update(float dt, glass::World& world, glass::Entity camera_entity) {
+void CameraController::update(float dt, glass::World& world, glass::Entity camera_entity,
+                              const glm::vec3* move_forward) {
     // Mouse look: yaw around Z (world up), pitch around local X (right)
     yaw_ -= mouse_dx_ * MOUSE_SENSITIVITY;
     pitch_ -= mouse_dy_ * MOUSE_SENSITIVITY;
@@ -51,9 +52,16 @@ void CameraController::update(float dt, glass::World& world, glass::Entity camer
                   * glm::rotate(glm::mat4{1.0f}, pitch_, glm::vec3{1.0f, 0.0f, 0.0f})
                   * base_rot;
 
-    // Movement vectors projected onto XY plane (Z-up)
-    glm::vec3 flat_forward = glm::normalize(glm::vec3{-std::sin(yaw_), std::cos(yaw_), 0.0f});
-    glm::vec3 flat_right   = glm::normalize(glm::vec3{ std::cos(yaw_), std::sin(yaw_), 0.0f});
+    // Movement vectors projected onto XY plane (Z-up).
+    // In XR mode, move_forward overrides yaw_ so WASD follows the headset direction.
+    glm::vec3 flat_forward, flat_right;
+    if (move_forward && glm::length(glm::vec2(move_forward->x, move_forward->y)) > 0.01f) {
+        flat_forward = glm::normalize(glm::vec3{move_forward->x, move_forward->y, 0.0f});
+        flat_right   = glm::normalize(glm::vec3{flat_forward.y, -flat_forward.x, 0.0f});
+    } else {
+        flat_forward = glm::normalize(glm::vec3{-std::sin(yaw_), std::cos(yaw_), 0.0f});
+        flat_right   = glm::normalize(glm::vec3{ std::cos(yaw_), std::sin(yaw_), 0.0f});
+    }
     glm::vec3 up           = glm::vec3{0.0f, 0.0f, 1.0f};
 
     // Accumulate input as acceleration

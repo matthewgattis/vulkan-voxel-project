@@ -11,8 +11,27 @@
 
 namespace voxel {
 
+// Query XR requirements and build the engine config. Called before Engine
+// construction so XR-required Vulkan extensions can be added to the instance.
+steel::EngineConfig Application::build_engine_config() {
+    steel::EngineConfig config{.title = "Voxel"};
+
+    auto xr_reqs = steel::XrSystem::query_requirements();
+    if (xr_reqs) {
+        config.extra_instance_extensions = std::move(xr_reqs->instance_extensions);
+        config.extra_device_extensions = std::move(xr_reqs->device_extensions);
+        // Don't cap Vulkan API version from XR runtime's maxApiVersionSupported.
+        // With XR_KHR_vulkan_enable (v1) the app creates its own VkInstance/VkDevice,
+        // so the runtime's reported max is advisory, not enforced. The engine needs
+        // its native API version (1.3) for correct rendering.
+        config.physical_device_query = steel::XrSystem::query_physical_device;
+    }
+
+    return config;
+}
+
 Application::Application()
-    : engine_{"Voxel"}
+    : engine_{build_engine_config()}
     , event_dispatcher_{engine_}
     , renderer_{engine_}
     , material_{glass::Material::create(
@@ -85,17 +104,41 @@ Application::Application()
     // Set the initial camera orientation via one controller update
     camera_controller_.update(0.0f, world_, camera_entity_);
 
+    // Initialize OpenXR if query_requirements() found an HMD
+    // (the static XR instance was created during build_engine_config)
+    if (steel::XrSystem::has_pending_session()) {
+        xr_system_ = std::make_unique<steel::XrSystem>(
+            static_cast<VkInstance>(*engine_.instance()),
+            static_cast<VkPhysicalDevice>(*engine_.physical_device()),
+            static_cast<VkDevice>(*engine_.device()),
+            engine_.graphics_family(), 0,
+            engine_.allocator(),
+            engine_.color_format(), engine_.depth_format(),
+            engine_.device());
+    }
+
     spdlog::info("Application initialized");
 }
 
 Application::~Application() {
     spdlog::info("Application shutting down");
+    engine_.wait_idle();
+    // Destroy XR system before engine (XR owns Vulkan resources)
+    xr_system_.reset();
 }
 
 void Application::run() {
     while (engine_.poll_events()) {
-        // Update camera with accumulated input
-        camera_controller_.update(engine_.delta_time(), world_, camera_entity_);
+        if (xr_system_) xr_system_->poll_events();
+
+        // Update camera with accumulated input.
+        // In XR mode, movement follows the headset direction (from previous frame).
+        if (xr_system_ && xr_system_->active()) {
+            camera_controller_.update(engine_.delta_time(), world_, camera_entity_,
+                                      &xr_move_forward_);
+        } else {
+            camera_controller_.update(engine_.delta_time(), world_, camera_entity_);
+        }
 
         // Compute view-projection for frustum culling
         auto& cam_transform = world_.get<glass::Transform>(camera_entity_);
@@ -117,7 +160,7 @@ void Application::run() {
             fps_timer_ = 0.0f;
         }
 
-        // ImGui frame
+        // ImGui frame (desktop companion only)
         engine_.imgui_begin();
         if (engine_.imgui_enabled()) {
             ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
@@ -128,6 +171,14 @@ void Application::run() {
                 ImGuiWindowFlags_NoFocusOnAppearing |
                 ImGuiWindowFlags_NoNav);
             ImGui::Text("%.1f FPS (%.2f ms)", fps_display_, fps_ms_display_);
+
+            if (xr_system_) {
+                ImGui::Text("XR: %s", xr_system_->active() ? "active" : "inactive");
+                if (xr_system_->active()) {
+                    auto ext = xr_system_->eye_extent();
+                    ImGui::Text("  Eye: %ux%u", ext.width, ext.height);
+                }
+            }
 
             ImGui::Separator();
             VmaTotalStatistics stats{};
@@ -143,7 +194,43 @@ void Application::run() {
         }
         engine_.imgui_end();
 
-        renderer_.render_frame(world_);
+        // Render XR eyes + desktop companion, or desktop-only
+        if (xr_system_ && xr_system_->active()) {
+            auto xr_state = xr_system_->wait_and_begin_frame(
+                camera_pos, camera_controller_.yaw());
+
+            // Extract headset forward for next frame's movement direction
+            if (xr_state.should_render) {
+                glm::mat4 head_world = glm::inverse(xr_state.eyes[0].view);
+                glm::vec3 forward_3d = -glm::vec3(head_world[2]); // -Z column = forward
+                xr_move_forward_ = glm::vec3(forward_3d.x, forward_3d.y, 0.0f);
+            }
+
+            auto* cmd = engine_.begin_command_buffer();
+            if (cmd) {
+                // Render both eyes into XR swapchains
+                if (xr_state.should_render) {
+                    renderer_.render_xr_eyes(*cmd, world_, engine_.current_frame(),
+                                             xr_state, *xr_system_);
+                }
+
+                // Desktop companion mirrors the headset (left eye view)
+                engine_.begin_scene_pass();
+                auto extent = engine_.extent();
+                float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                cam_component.camera.set_aspect_ratio(aspect);
+                const glm::mat4* mirror_view =
+                    xr_state.should_render ? &xr_state.eyes[0].view : nullptr;
+                renderer_.render_desktop_companion(*cmd, world_, engine_.current_frame(),
+                                                   mirror_view);
+                engine_.end_frame();
+            }
+
+            xr_system_->end_frame(xr_state);
+        } else {
+            // Desktop-only (existing path, unchanged)
+            renderer_.render_frame(world_);
+        }
     }
     engine_.wait_idle();
 }
