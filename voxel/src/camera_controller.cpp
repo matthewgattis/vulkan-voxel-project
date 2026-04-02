@@ -12,9 +12,8 @@
 namespace voxel {
 
 CameraController::CameraController(glass::EventDispatcher& dispatcher,
-                                   glm::vec3 position, float yaw, float pitch)
-    : position_{position}
-    , yaw_{yaw}
+                                   float yaw, float pitch)
+    : yaw_{yaw}
     , pitch_{pitch}
 {
     subscription_ = dispatcher.subscribe([this](const SDL_Event& event, bool& handled) {
@@ -76,7 +75,6 @@ void CameraController::update(float dt, glass::World& world, glass::Entity camer
         sprinting_ = true;
     }
 
-
     // Use the appropriate max speed for acceleration and clamping
     float current_max = sprinting_ ? SPRINT_SPEED : MAX_SPEED;
 
@@ -101,12 +99,12 @@ void CameraController::update(float dt, glass::World& world, glass::Entity camer
         vel.linear = glm::normalize(vel.linear) * current_max;
     }
 
-    // Integrate position
-    position_ += vel.linear * dt;
+    // Read position from entity, integrate, write back
+    auto& transform = world.get<glass::Transform>(camera_entity);
+    glm::vec3 position = glm::vec3(transform.matrix[3]);
+    position += vel.linear * dt;
 
-    // Build world-space camera transform: translate * rotate
-    glm::mat4 transform = glm::translate(glm::mat4{1.0f}, position_) * rot;
-    world.get<glass::Transform>(camera_entity).matrix = transform;
+    transform.matrix = glm::translate(glm::mat4{1.0f}, position) * rot;
 }
 
 } // namespace voxel

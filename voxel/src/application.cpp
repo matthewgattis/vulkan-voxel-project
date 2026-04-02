@@ -68,7 +68,6 @@ Application::Application()
     })}
     , camera_controller_{
           event_dispatcher_,
-          glm::vec3{32.0f, -20.0f, 80.0f},
           0.0f,                                     // yaw: looking along +Y
           std::atan2(-30.0f, 52.0f)}                // pitch: direction (0,52,-30)
 {
@@ -76,13 +75,14 @@ Application::Application()
         static_cast<float>(engine_.extent().width) / static_cast<float>(engine_.extent().height),
         0.1f, 500.0f};
 
-    world_.add<glass::Transform>(camera_entity_, glass::Transform{glm::mat4{1.0f}});
+    glm::vec3 start_pos{32.0f, -20.0f, 80.0f};
+    world_.add<glass::Transform>(camera_entity_, glass::Transform{glm::translate(glm::mat4{1.0f}, start_pos)});
     world_.add<glass::Velocity>(camera_entity_, glass::Velocity{});
     world_.add<glass::CameraComponent>(camera_entity_, glass::CameraComponent{std::move(camera)});
     renderer_.set_camera(camera_entity_);
     renderer_.bind_world(world_);
 
-    // Set the initial camera transform via one controller update
+    // Set the initial camera orientation via one controller update
     camera_controller_.update(0.0f, world_, camera_entity_);
 
     spdlog::info("Application initialized");
@@ -104,7 +104,8 @@ void Application::run() {
         glm::mat4 vp = cam_component.camera.projection() * view;
 
         // Load/unload chunks around camera
-        chunk_manager_.update(camera_controller_.position(), vp);
+        glm::vec3 camera_pos = glm::vec3(cam_transform.matrix[3]);
+        chunk_manager_.update(camera_pos, vp);
 
         // Update FPS counter once per second
         fps_timer_ += engine_.delta_time();
