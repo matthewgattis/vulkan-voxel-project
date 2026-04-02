@@ -118,7 +118,7 @@ Each subdirectory has its own `CMakeLists.txt`.
 
 ### voxel::Application
 - Owns Engine, EventDispatcher, Renderer, World, Material, ChunkManager, TerrainGenerator, CameraController
-- Subscribes to EventDispatcher with three handlers (in order): ImGui event forwarding (marks mouse events handled when ImGui wants them), mouse capture/release (manages SDL relative mouse mode, blocks motion when not captured), and key shortcuts (F3 ImGui toggle)
+- Subscribes to EventDispatcher with three handlers (in order): ImGui event forwarding (marks mouse events handled when ImGui wants them), mouse capture (Escape releases, click re-captures; blocks motion when not captured), and key shortcuts (F3 ImGui toggle)
 - Member declaration order ensures subscription order: ImGui sub, mouse capture sub, key sub are initialized before CameraController (which also subscribes)
 - Calls `renderer_.bind_world(world_)` for automatic GPU resource cleanup
 - ImGui debug overlay shows FPS and VMA memory statistics

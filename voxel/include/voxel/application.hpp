@@ -52,9 +52,7 @@ private:
     glass::Subscription key_sub_;
     CameraController camera_controller_;
 
-    // Mouse capture state (app-level UX: click to enter look mode)
-    float mouse_capture_x_ = 0.0f;
-    float mouse_capture_y_ = 0.0f;
+    // Mouse capture state (not captured by default, Escape releases, click re-captures)
     bool mouse_captured_ = false;
 
     // XR movement direction (headset forward projected onto XY plane).

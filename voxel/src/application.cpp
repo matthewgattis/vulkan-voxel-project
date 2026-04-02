@@ -57,21 +57,19 @@ Application::Application()
     , mouse_capture_sub_{event_dispatcher_.subscribe([this](const SDL_Event& event, bool& handled) {
         if (handled) return;
 
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
-            int w, h;
-            SDL_GetWindowSize(engine_.window(), &w, &h);
-            bool in_client_area = event.button.x >= 0 && event.button.x < w &&
-                                  event.button.y >= 0 && event.button.y < h;
-            if (in_client_area) {
-                SDL_GetMouseState(&mouse_capture_x_, &mouse_capture_y_);
-                mouse_captured_ = true;
-                SDL_SetWindowRelativeMouseMode(engine_.window(), true);
-            }
-        }
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
+        // Escape releases the mouse
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_ESCAPE &&
+            !event.key.repeat && mouse_captured_) {
             mouse_captured_ = false;
-            SDL_WarpMouseInWindow(engine_.window(), mouse_capture_x_, mouse_capture_y_);
             SDL_SetWindowRelativeMouseMode(engine_.window(), false);
+        }
+
+        // Click in the window re-captures (ImGui clicks are already handled above)
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT &&
+            !mouse_captured_) {
+            mouse_captured_ = true;
+            SDL_SetWindowRelativeMouseMode(engine_.window(), true);
+            handled = true; // consume the click that re-captured
         }
 
         // Block mouse motion from reaching other subscribers when not captured

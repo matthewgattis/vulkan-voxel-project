@@ -135,6 +135,6 @@ Provides ECS, rendering, and event dispatch on top of steel.
 - **ChunkMesh** performs per-face neighbor culling (cross-chunk), per-vertex ambient occlusion, AO-aware quad triangulation, and vertex welding via FNV-1a hashing.
 - **Shaders** compute half-Lambert lighting and spherical exponential-squared distance fog in the vertex shader.
 - **CameraController** subscribes to EventDispatcher for keyboard and mouse events. Velocity-based physics with subtractive friction, sprint support, and frame-rate independent integration.
-- **Application** subscribes to EventDispatcher for ImGui forwarding, mouse capture (SDL relative mouse mode), and key shortcuts (F3 debug overlay toggle).
+- **Application** subscribes to EventDispatcher for ImGui forwarding, mouse capture (click to capture, Escape to release), and key shortcuts (F3 debug overlay toggle).
 
 On macOS, MoltenVK portability extensions are automatically enabled.
