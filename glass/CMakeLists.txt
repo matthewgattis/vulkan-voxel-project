@@ -2,6 +2,7 @@ add_library(glass)
 
 target_sources(glass PRIVATE
     src/camera.cpp
+    src/event_dispatcher.cpp
     src/vertex.cpp
     src/shader.cpp
     src/geometry.cpp

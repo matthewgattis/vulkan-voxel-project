@@ -81,7 +81,7 @@ Moving away from and back to a previously-loaded area regenerates the column fro
   ```cpp
   return h1 ^ (h2 * 0x9e3779b9u + (h1 << 6) + (h1 >> 2));
   ```
-- **`keyboard` raw pointer:** `camera_controller.hpp` takes `const bool* keyboard` (mirrors SDL's API). Consider `std::span<const bool>` for clarity.
+- ~~**`keyboard` raw pointer:** `camera_controller.hpp` takes `const bool* keyboard` (mirrors SDL's API). Consider `std::span<const bool>` for clarity.~~ _Fixed: CameraController now subscribes to `glass::EventDispatcher` and tracks key state internally via KEY_DOWN/KEY_UP events._
 - **FPS counter is CPU-side:** The timer accumulates before any GPU wait, so it measures CPU frame pacing, not total frame time. Fine for now, just worth knowing.
 
 ---

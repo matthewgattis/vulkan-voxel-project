@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions with ECS) -> `voxel` (application). The application renders procedurally generated voxel terrain using simplex noise, with multithreaded chunk loading, per-vertex ambient occlusion, vertex welding, half-Lambert lighting, and a spectator camera with velocity-based physics. Always-on FXAA 3.11 anti-aliasing and Dear ImGui debug overlay are applied as post-processing passes inside `steel::Engine`.
+Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions with ECS, event dispatch) -> `voxel` (application). The application renders procedurally generated voxel terrain using simplex noise, with multithreaded chunk loading, per-vertex ambient occlusion, vertex welding, half-Lambert lighting, and a spectator camera with velocity-based physics. Always-on FXAA 3.11 anti-aliasing and Dear ImGui debug overlay are applied as post-processing passes inside `steel::Engine`.
 
 ## Build
 
@@ -12,13 +12,13 @@ cmake --build build
 cd build && ctest --output-on-failure
 ```
 
-Requires: CMake 3.25+, C++23 compiler, Vulkan SDK with `glslc`, spdlog (via vcpkg).
+Requires: CMake 3.25+, C++23 compiler, Vulkan-capable GPU. All dependencies (including `glslc` via shaderc) managed by vcpkg.
 
 ## Code Organization
 
 - **Top-level CMakeLists.txt**: Only finds packages and adds subdirectories. Do not add targets here.
 - **steel/**: Vulkan RAII engine library. Namespace `steel`. Links against Vulkan, GLM, SDL3.
-- **glass/**: Engine abstraction layer. Namespace `glass`. Links against `steel`. Provides meshes, materials, ECS (Entity Component System), and rendering abstractions built on top of steel's Vulkan wrappers.
+- **glass/**: Engine abstraction layer. Namespace `glass`. Links against `steel`. Provides meshes, materials, ECS (Entity Component System), event dispatch, and rendering abstractions built on top of steel's Vulkan wrappers.
 - **voxel/**: Application executable. Namespace `voxel`. Links against `glass`.
 - **test/**: Google Test suite. Links against `steel`, `glass`, and GTest.
 
@@ -48,8 +48,7 @@ Each subdirectory has its own `CMakeLists.txt`.
 - FXAA 3.11 post-processing: the scene renders to an offscreen target, then an FXAA fullscreen pass (quality preset 12 with edge endpoint search) reads it via a combined image sampler descriptor and writes to the swapchain. The FXAA pipeline is built directly, separate from `PipelineBuilder`. The `begin_frame()`/`end_frame()` API is unchanged — glass and voxel are unaware of FXAA.
 - `wait_idle()` — waits for device idle (used for clean shutdown)
 - `poll_events()` -> `bool` (false = quit requested). Handles quit, resize, and delta time. Forwards all other events via optional event callback.
-- `set_event_callback(fn)` — optional per-event callback for application-level input handling
-- `keyboard_state()` -> `const bool*` — SDL keyboard state array
+- `set_event_callback(fn)` — single event callback slot, typically claimed by `glass::EventDispatcher`
 - `delta_time()` — frame delta in seconds, clamped to 0.1s max
 - `current_frame()` — current frame-in-flight index
 - `defer_destroy<T>(resource)` — type-erased deferred destruction, holds resource for `MAX_FRAMES_IN_FLIGHT + 1` frames
@@ -76,6 +75,14 @@ Each subdirectory has its own `CMakeLists.txt`.
 - `Buffer::create_index_buffer(...)` — staging upload to device-local index buffer
 - `Buffer::create(...)` — general buffer creation
 - `map()`, `unmap()` — host-visible memory access
+
+### glass::EventDispatcher
+- `EventDispatcher(engine)` — registers as `steel::Engine`'s sole event callback, fans out SDL events to multiple subscribers
+- `subscribe(callback)` -> `Subscription` — RAII subscription handle; dropping it unsubscribes automatically. Subscribers called in subscription order.
+- Callback signature: `void(const SDL_Event&, bool& handled)` — subscribers can read and set `handled` to consume events (e.g., ImGui marking mouse events handled so camera input skips them)
+
+### glass::Subscription
+- RAII handle returned by `EventDispatcher::subscribe()`. Move-only. Destructor calls unsubscribe.
 
 ### glass::Camera
 - Projection-only: `Camera(fov_degrees, aspect_ratio, near_plane, far_plane)`
@@ -110,8 +117,9 @@ Each subdirectory has its own `CMakeLists.txt`.
 ## Voxel Application
 
 ### voxel::Application
-- Owns Engine, Renderer, World, Material, ChunkManager, TerrainGenerator, CameraController
-- Sets up Engine event callback for mouse capture, ImGui toggle (F3), and mouse motion accumulation
+- Owns Engine, EventDispatcher, Renderer, World, Material, ChunkManager, TerrainGenerator, CameraController
+- Subscribes to EventDispatcher with three handlers (in order): ImGui event forwarding (marks mouse events handled when ImGui wants them), mouse capture/release (manages SDL relative mouse mode, blocks motion when not captured), and key shortcuts (F3 ImGui toggle)
+- Member declaration order ensures subscription order: ImGui sub, mouse capture sub, key sub are initialized before CameraController (which also subscribes)
 - Calls `renderer_.bind_world(world_)` for automatic GPU resource cleanup
 - ImGui debug overlay shows FPS and VMA memory statistics
 
@@ -156,11 +164,12 @@ Each subdirectory has its own `CMakeLists.txt`.
 
 ### voxel::CameraController
 - Spectator camera: WASD movement on XY plane, Space/Shift for Z, left-click-drag for mouse look
-- `update(dt, mouse_dx, mouse_dy, keyboard, world, camera_entity)` — decoupled from Engine
+- Subscribes to `glass::EventDispatcher` for KEY_DOWN/KEY_UP and MOUSE_MOTION events; tracks key state and mouse deltas internally
+- `update(dt, world, camera_entity)` — uses internal input state, resets mouse deltas each frame
 - `position()` — current camera position (used by ChunkManager for loading radius)
 - Velocity-based physics: acceleration + subtractive friction (proportional to speed), frame-rate independent
 - Sprint: Tab or Ctrl latches sprint on while moving, releases when all move keys released
-- Base speed 11 units/s, sprint speed 22 units/s
+- Base speed 22 units/s, sprint speed 44 units/s
 - Camera convention: OpenGL look-along -Z with base rotation for Z-up world
 
 ## Adding New Code

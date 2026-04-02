@@ -91,9 +91,6 @@ public:
     // Timing
     float delta_time() const { return delta_time_; }
 
-    // Input (thin SDL wrappers)
-    const bool* keyboard_state() const;
-
 private:
     void create_instance(std::string_view title);
     void create_surface();

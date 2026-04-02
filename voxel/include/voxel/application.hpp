@@ -1,6 +1,7 @@
 #pragma once
 
 #include <steel/engine.hpp>
+#include <glass/event_dispatcher.hpp>
 #include <glass/shader.hpp>
 #include <glass/geometry.hpp>
 #include <glass/material.hpp>
@@ -29,24 +30,26 @@ public:
     void run();
 
 private:
-    void handle_event(const SDL_Event& event);
-
     steel::Engine engine_;
+    glass::EventDispatcher event_dispatcher_;
     glass::Renderer renderer_;
     glass::Material material_;
     glass::World world_;
     TerrainGenerator terrain_generator_;
     ChunkManager chunk_manager_;
     glass::Entity camera_entity_;
+
+    // Subscriptions and camera controller are ordered so that ImGui and
+    // mouse capture subscribe before CameraController (member init order).
+    glass::Subscription imgui_sub_;
+    glass::Subscription mouse_capture_sub_;
+    glass::Subscription key_sub_;
     CameraController camera_controller_;
 
-    // Input state (managed by event callback)
-    float mouse_dx_ = 0.0f;
-    float mouse_dy_ = 0.0f;
+    // Mouse capture state (app-level UX: click to enter look mode)
     float mouse_capture_x_ = 0.0f;
     float mouse_capture_y_ = 0.0f;
     bool mouse_captured_ = false;
-    bool mouse_capture_first_frame_ = false;
 
     // FPS display (updated once per second)
     float fps_display_ = 0.0f;

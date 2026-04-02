@@ -152,10 +152,12 @@ bool Engine::poll_events() {
         delta_time_ = 0.1f;
     }
 
+    bool should_quit = false;
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT) {
-            return false;
+            should_quit = true;
+            continue;
         }
         if (event.type == SDL_EVENT_WINDOW_RESIZED ||
             event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
@@ -166,11 +168,7 @@ bool Engine::poll_events() {
             event_callback_(event);
         }
     }
-    return true;
-}
-
-const bool* Engine::keyboard_state() const {
-    return SDL_GetKeyboardState(nullptr);
+    return !should_quit;
 }
 
 // ---------------------------------------------------------------------------

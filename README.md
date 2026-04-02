@@ -8,7 +8,7 @@ A work-in-progress Vulkan-based voxel renderer built with C++23 — an experimen
 
 - CMake 3.25+
 - C++23 compatible compiler
-- Vulkan SDK (with `glslc` shader compiler)
+- Vulkan-capable GPU
 - Git (for vcpkg submodule)
 
 ## Getting Started
@@ -37,6 +37,7 @@ cd build && ctest --output-on-failure
 - **WASD** — Move on XY plane
 - **Space / Left Shift** — Move up / down (Z axis)
 - **Tab / Left Ctrl** — Sprint (latches while moving, 2x speed)
+- **F3** — Toggle debug overlay
 
 ## Project Structure
 
@@ -51,6 +52,7 @@ cd build && ctest --output-on-failure
 │   ├── imgui_pass  Dear ImGui rendering pass
 │   └── shaders/    Internal GLSL shaders (FXAA 3.11), compiled to embedded SPIR-V at build time
 ├── glass/          Engine abstraction layer (namespace: glass)
+│   ├── event_dispatcher  Multi-subscriber event fan-out with RAII subscriptions and handled flag
 │   ├── shader      SPIR-V loader (stage + binary data)
 │   ├── mesh        Abstract data-only mesh interface (vertices/indices spans)
 │   ├── geometry    GPU-side buffers created from a Mesh
@@ -70,7 +72,7 @@ cd build && ctest --output-on-failure
 │   ├── chunk_mesh  Mesh generation with per-vertex AO, cross-chunk culling, and vertex welding
 │   ├── chunk_manager  Multithreaded dynamic chunk loading/unloading with frustum prioritization
 │   ├── terrain_generator  Multi-octave fBm terrain with TerrainColumn heightmap caching
-│   ├── camera_controller  Spectator camera with velocity physics and sprint
+│   ├── camera_controller  Spectator camera with velocity physics, sprint, and event-driven input
 │   ├── shaders/    GLSL shaders (compiled to SPIR-V via glslc)
 │   └── main        Entry point
 ├── docs/           Design notes and scaling documentation
@@ -87,6 +89,8 @@ Managed via [vcpkg](https://github.com/microsoft/vcpkg) (included as a git submo
 | vulkan-memory-allocator | GPU memory management |
 | glm | Linear algebra (noise, transforms) |
 | sdl3 | Windowing and input |
+| imgui | Debug overlay |
+| shaderc | GLSL to SPIR-V compilation (provides `glslc`) |
 | gtest | Testing framework |
 | spdlog | Structured logging |
 
@@ -101,10 +105,36 @@ Managed via [vcpkg](https://github.com/microsoft/vcpkg) (included as a git submo
 
 Three-layer architecture: **steel** -> **glass** -> **voxel**.
 
-**steel** wraps Vulkan initialization and rendering into RAII types (`vk::raii::*`) so resources clean up automatically. The `Engine` class provides a `begin_frame()`/`end_frame()` interface with frames-in-flight synchronization, keyboard state, delta time, an optional event callback for application-level input handling, and always-on FXAA 3.11 anti-aliasing (quality preset 12 with edge endpoint search). `Engine::defer_destroy<T>()` holds any moveable GPU resource for `MAX_FRAMES_IN_FLIGHT + 1` frames before dropping it, preventing in-flight frame conflicts. `Swapchain` owns the swapchain, depth buffer, offscreen target, and scene render pass. `UniformBuffer<T>` is a header-only template managing per-frame-in-flight descriptor sets and persistently mapped buffers. `PipelineBuilder` uses a fluent API with dynamic viewport/scissor. `Buffer` handles device-local vertex and index buffer creation with staging transfers.
+### steel — Vulkan RAII engine
 
-**glass** provides engine-level abstractions. `Camera` is projection-only (fov, aspect, near, far); the view matrix is derived from the entity's `Transform` via `glm::inverse()`. The ECS (`Entity`, `ComponentPool<T>`, `World`, `View<Ts...>`) uses sparse-set storage for O(1) component operations. `World` supports a pre-destroy callback, enabling automatic GPU resource cleanup when entities are destroyed. `Renderer` takes an explicit camera entity via `set_camera()`, and updates a per-frame UBO (set 0) with separate view and projection matrices. `Renderer::bind_world()` registers the destroy callback so that `GeometryComponent`-owned GPU buffers are automatically deferred-destroyed via Engine. Per-object model matrices are pushed via push constants. Standard components: `Transform`, `GeometryComponent` (owns `unique_ptr<Geometry>`), `MaterialComponent`, `Velocity`, `CameraComponent`.
+Wraps Vulkan initialization and rendering into RAII types (`vk::raii::*`).
 
-**voxel** is the application. `ChunkManager` dynamically loads/unloads terrain around the camera within a configurable square radius. In-frustum chunks are prioritized over out-of-frustum ones, with distance as tiebreaker. Chunk generation (voxel fill + mesh build) runs on a pool of `std::jthread` workers with cooperative cancellation. `TerrainGenerator` produces terrain from 6-octave fBm simplex noise with a power curve for sharper peaks (16x16x16 voxels per chunk, Z-up). `TerrainColumn` precomputes the heightmap and gradient for a column, determining which Z slices need generation. Biomes include grass, dirt, stone, slope-aware sand near shorelines, snow above a noise-varying snow line, and opaque water below sea level. `ChunkMesh` performs per-face neighbor culling (with cross-chunk lookups), per-vertex ambient occlusion, AO-aware quad triangulation, and vertex welding. Shaders compute half-Lambert lighting and spherical exponential-squared distance fog in the vertex shader. The spectator camera uses velocity-based physics with subtractive friction, sprint support, and frame-rate independent integration. Application-level input (mouse capture, ImGui toggle) is handled via Engine's event callback.
+- **Engine** provides `begin_frame()`/`end_frame()` with frames-in-flight synchronization, delta time, and a single event callback slot (typically claimed by `glass::EventDispatcher`).
+- **Deferred destruction** via `Engine::defer_destroy<T>()` — holds any moveable GPU resource for `MAX_FRAMES_IN_FLIGHT + 1` frames before dropping it.
+- **FXAA 3.11** always-on anti-aliasing (quality preset 12 with edge endpoint search). Scene renders to an offscreen target; FXAA reads it and writes to the swapchain. Transparent to upper layers.
+- **Swapchain** owns the swapchain, depth buffer, offscreen target, and scene render pass.
+- **UniformBuffer\<T\>** — header-only template managing per-frame-in-flight descriptor sets and persistently mapped buffers.
+- **PipelineBuilder** — fluent API with dynamic viewport/scissor.
+- **Buffer** — device-local vertex/index buffer creation with staging transfers.
+
+### glass — engine abstractions
+
+Provides ECS, rendering, and event dispatch on top of steel.
+
+- **EventDispatcher** registers as Engine's sole event callback and fans out SDL events to multiple subscribers. Callbacks receive `bool& handled` for event consumption. `subscribe()` returns an RAII `Subscription` that unsubscribes on destruction.
+- **ECS** (`Entity`, `ComponentPool<T>`, `World`, `View<Ts...>`) uses sparse-set storage for O(1) component operations. `World` supports a pre-destroy callback for automatic GPU resource cleanup.
+- **Camera** is projection-only (fov, aspect, near, far); view matrix derived from Transform via `glm::inverse()`.
+- **Renderer** updates a per-frame UBO (set 0) with split view/projection matrices. `bind_world()` registers a destroy callback so `GeometryComponent`-owned GPU buffers are automatically deferred-destroyed. Per-object model matrices use push constants.
+- **Components**: Transform, GeometryComponent (owns `unique_ptr<Geometry>`), MaterialComponent, Velocity, CameraComponent.
+
+### voxel — application
+
+- **ChunkManager** dynamically loads/unloads terrain around the camera. In-frustum chunks are prioritized, with distance as tiebreaker. Generation runs on a pool of `std::jthread` workers with cooperative cancellation.
+- **TerrainGenerator** produces terrain from 6-octave fBm simplex noise with a power curve for sharper peaks (16x16x16 voxels per chunk, Z-up). `TerrainColumn` precomputes the heightmap and gradient per column.
+- **Biomes**: grass, dirt, stone, slope-aware sand near shorelines, snow above a noise-varying snow line, and opaque water below sea level.
+- **ChunkMesh** performs per-face neighbor culling (cross-chunk), per-vertex ambient occlusion, AO-aware quad triangulation, and vertex welding via FNV-1a hashing.
+- **Shaders** compute half-Lambert lighting and spherical exponential-squared distance fog in the vertex shader.
+- **CameraController** subscribes to EventDispatcher for keyboard and mouse events. Velocity-based physics with subtractive friction, sprint support, and frame-rate independent integration.
+- **Application** subscribes to EventDispatcher for ImGui forwarding, mouse capture (SDL relative mouse mode), and key shortcuts (F3 debug overlay toggle).
 
 On macOS, MoltenVK portability extensions are automatically enabled.

@@ -13,6 +13,7 @@ namespace voxel {
 
 Application::Application()
     : engine_{"Voxel"}
+    , event_dispatcher_{engine_}
     , renderer_{engine_}
     , material_{glass::Material::create(
           engine_,
@@ -23,7 +24,50 @@ Application::Application()
           renderer_.frame_descriptor_layout())}
     , chunk_manager_{engine_, world_, material_, terrain_generator_}
     , camera_entity_{world_.create()}
+    // Subscribe event handlers (order matters: ImGui and capture before CameraController)
+    , imgui_sub_{event_dispatcher_.subscribe([this](const SDL_Event& event, bool& handled) {
+        // Always forward to ImGui so its internal state (including
+        // SDL_CaptureMouse) stays consistent across down/up pairs.
+        engine_.imgui_process_event(event);
+        if (engine_.imgui_enabled()) {
+            if (ImGui::GetIO().WantCaptureMouse && !mouse_captured_) {
+                handled = true;
+            }
+        }
+    })}
+    , mouse_capture_sub_{event_dispatcher_.subscribe([this](const SDL_Event& event, bool& handled) {
+        if (handled) return;
+
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
+            int w, h;
+            SDL_GetWindowSize(engine_.window(), &w, &h);
+            bool in_client_area = event.button.x >= 0 && event.button.x < w &&
+                                  event.button.y >= 0 && event.button.y < h;
+            if (in_client_area) {
+                SDL_GetMouseState(&mouse_capture_x_, &mouse_capture_y_);
+                mouse_captured_ = true;
+                SDL_SetWindowRelativeMouseMode(engine_.window(), true);
+            }
+        }
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
+            mouse_captured_ = false;
+            SDL_WarpMouseInWindow(engine_.window(), mouse_capture_x_, mouse_capture_y_);
+            SDL_SetWindowRelativeMouseMode(engine_.window(), false);
+        }
+
+        // Block mouse motion from reaching other subscribers when not captured
+        if (event.type == SDL_EVENT_MOUSE_MOTION && !mouse_captured_) {
+            handled = true;
+        }
+    })}
+    , key_sub_{event_dispatcher_.subscribe([this](const SDL_Event& event, bool&) {
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_F3 &&
+            !event.key.repeat) {
+            engine_.set_imgui_enabled(!engine_.imgui_enabled());
+        }
+    })}
     , camera_controller_{
+          event_dispatcher_,
           glm::vec3{32.0f, -20.0f, 80.0f},
           0.0f,                                     // yaw: looking along +Y
           std::atan2(-30.0f, 52.0f)}                // pitch: direction (0,52,-30)
@@ -38,11 +82,8 @@ Application::Application()
     renderer_.set_camera(camera_entity_);
     renderer_.bind_world(world_);
 
-    // Set up event callback
-    engine_.set_event_callback([this](const SDL_Event& event) { handle_event(event); });
-
     // Set the initial camera transform via one controller update
-    camera_controller_.update(0.0f, 0.0f, 0.0f, engine_.keyboard_state(), world_, camera_entity_);
+    camera_controller_.update(0.0f, world_, camera_entity_);
 
     spdlog::info("Application initialized");
 }
@@ -51,50 +92,10 @@ Application::~Application() {
     spdlog::info("Application shutting down");
 }
 
-void Application::handle_event(const SDL_Event& event) {
-    // Forward to ImGui when mouse is not captured
-    if (engine_.imgui_enabled() && !mouse_captured_) {
-        engine_.imgui_process_event(event);
-    }
-
-    // Toggle ImGui with F3
-    if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_F3 &&
-        !event.key.repeat) {
-        engine_.set_imgui_enabled(!engine_.imgui_enabled());
-    }
-
-    // Mouse capture
-    if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
-        if (!engine_.imgui_enabled() || !ImGui::GetIO().WantCaptureMouse) {
-            SDL_GetMouseState(&mouse_capture_x_, &mouse_capture_y_);
-            mouse_captured_ = true;
-            mouse_capture_first_frame_ = true;
-            SDL_SetWindowRelativeMouseMode(engine_.window(), true);
-        }
-    }
-    if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
-        mouse_captured_ = false;
-        SDL_SetWindowRelativeMouseMode(engine_.window(), false);
-        SDL_WarpMouseInWindow(engine_.window(), mouse_capture_x_, mouse_capture_y_);
-    }
-
-    // Accumulate mouse motion
-    if (event.type == SDL_EVENT_MOUSE_MOTION && mouse_captured_ && !mouse_capture_first_frame_) {
-        mouse_dx_ += event.motion.xrel;
-        mouse_dy_ += event.motion.yrel;
-    }
-}
-
 void Application::run() {
     while (engine_.poll_events()) {
         // Update camera with accumulated input
-        camera_controller_.update(engine_.delta_time(), mouse_dx_, mouse_dy_,
-                                  engine_.keyboard_state(), world_, camera_entity_);
-
-        // Reset per-frame mouse accumulators
-        mouse_dx_ = 0.0f;
-        mouse_dy_ = 0.0f;
-        mouse_capture_first_frame_ = false;
+        camera_controller_.update(engine_.delta_time(), world_, camera_entity_);
 
         // Compute view-projection for frustum culling
         auto& cam_transform = world_.get<glass::Transform>(camera_entity_);

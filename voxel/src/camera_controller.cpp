@@ -2,7 +2,7 @@
 
 #include <glass/components.hpp>
 
-#include <SDL3/SDL_scancode.h>
+#include <SDL3/SDL_events.h>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -11,19 +11,37 @@
 
 namespace voxel {
 
-CameraController::CameraController(glm::vec3 position, float yaw, float pitch)
+CameraController::CameraController(glass::EventDispatcher& dispatcher,
+                                   glm::vec3 position, float yaw, float pitch)
     : position_{position}
     , yaw_{yaw}
     , pitch_{pitch}
 {
+    subscription_ = dispatcher.subscribe([this](const SDL_Event& event, bool& handled) {
+        if (handled) return;
+
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+            keys_[event.key.scancode] = true;
+        }
+        if (event.type == SDL_EVENT_KEY_UP) {
+            keys_[event.key.scancode] = false;
+        }
+        if (event.type == SDL_EVENT_MOUSE_MOTION) {
+            mouse_dx_ += event.motion.xrel;
+            mouse_dy_ += event.motion.yrel;
+        }
+    });
 }
 
-void CameraController::update(float dt, float mouse_dx, float mouse_dy, const bool* keys,
-                               glass::World& world, glass::Entity camera_entity) {
+void CameraController::update(float dt, glass::World& world, glass::Entity camera_entity) {
     // Mouse look: yaw around Z (world up), pitch around local X (right)
-    yaw_ -= mouse_dx * MOUSE_SENSITIVITY;
-    pitch_ -= mouse_dy * MOUSE_SENSITIVITY;
+    yaw_ -= mouse_dx_ * MOUSE_SENSITIVITY;
+    pitch_ -= mouse_dy_ * MOUSE_SENSITIVITY;
     pitch_ = std::clamp(pitch_, -MAX_PITCH, MAX_PITCH);
+
+    // Reset per-frame mouse accumulators
+    mouse_dx_ = 0.0f;
+    mouse_dy_ = 0.0f;
 
     // Base rotation: camera looks along local -Z with +Y up (OpenGL convention).
     // Rotate 90° around X so local -Z maps to world +Y (forward) and local +Y maps to world +Z (up).
@@ -42,19 +60,19 @@ void CameraController::update(float dt, float mouse_dx, float mouse_dy, const bo
     // Accumulate input as acceleration
     auto& vel = world.get<glass::Velocity>(camera_entity);
     glm::vec3 accel{0.0f};
-    if (keys[SDL_SCANCODE_W])      accel += flat_forward;
-    if (keys[SDL_SCANCODE_S])      accel -= flat_forward;
-    if (keys[SDL_SCANCODE_D])      accel += flat_right;
-    if (keys[SDL_SCANCODE_A])      accel -= flat_right;
-    if (keys[SDL_SCANCODE_SPACE])  accel += up;
-    if (keys[SDL_SCANCODE_LSHIFT]) accel -= up;
+    if (keys_[SDL_SCANCODE_W])      accel += flat_forward;
+    if (keys_[SDL_SCANCODE_S])      accel -= flat_forward;
+    if (keys_[SDL_SCANCODE_D])      accel += flat_right;
+    if (keys_[SDL_SCANCODE_A])      accel -= flat_right;
+    if (keys_[SDL_SCANCODE_SPACE])  accel += up;
+    if (keys_[SDL_SCANCODE_LSHIFT]) accel -= up;
 
     bool moving = glm::length(accel) > 0.0f;
 
     // Sprint: latch on when Ctrl pressed while moving, release when movement stops
     if (!moving) {
         sprinting_ = false;
-    } else if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_TAB]) {
+    } else if (keys_[SDL_SCANCODE_LCTRL] || keys_[SDL_SCANCODE_TAB]) {
         sprinting_ = true;
     }
 
