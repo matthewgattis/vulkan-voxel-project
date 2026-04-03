@@ -1,6 +1,6 @@
 # Vulkan Voxel Project
 
-A work-in-progress Vulkan-based voxel renderer built with C++23 — an experiment in building a Vulkan game engine from scratch, using SDL3 for windowing and Vulkan RAII wrappers for safe resource management.
+A work-in-progress Vulkan-based voxel renderer built with C++23 — an experiment in building a Vulkan game engine from scratch, using SDL3 for windowing, OpenXR for VR headset support, and Vulkan RAII wrappers for safe resource management.
 
 ![Screenshot](docs/screenshot.png)
 
