@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers) -> `glass` (engine abstractions with ECS, event dispatch) -> `voxel` (application). The application renders procedurally generated voxel terrain using simplex noise, with multithreaded chunk loading, per-vertex ambient occlusion, vertex welding, half-Lambert lighting, and a spectator camera with velocity-based physics. Always-on FXAA 3.11 anti-aliasing and Dear ImGui debug overlay are applied as post-processing passes inside `steel::Engine`.
+Vulkan voxel renderer using C++23 with CMake and vcpkg. Three-layer architecture: `steel` (Vulkan RAII wrappers + OpenXR) -> `glass` (engine abstractions with ECS, event dispatch) -> `voxel` (application). The application renders procedurally generated voxel terrain using simplex noise, with multithreaded chunk loading, per-vertex ambient occlusion, vertex welding, half-Lambert lighting, and a spectator camera with velocity-based physics. Supports OpenXR HMD rendering with stereo views and head tracking alongside a desktop companion window. Always-on FXAA 3.11 anti-aliasing and Dear ImGui debug overlay are applied as post-processing passes on the desktop view inside `steel::Engine`.
 
 ## Build
 
@@ -41,9 +41,11 @@ Each subdirectory has its own `CMakeLists.txt`.
 ## Key Interfaces
 
 ### steel::Engine
-- `Engine(title)` — creates window and initializes Vulkan. Auto-selects largest fitting 4:3 resolution from predefined list for the primary display.
+- `Engine(title)` or `Engine(EngineConfig)` — creates window and initializes Vulkan. Auto-selects largest fitting 4:3 resolution from predefined list for the primary display. `EngineConfig` supports extra Vulkan instance/device extensions, API version override, and a physical device query callback (used by OpenXR).
 - High-DPI support via `SDL_WINDOW_HIGH_PIXEL_DENSITY`
-- `begin_frame()` -> `const vk::raii::CommandBuffer*` (nullptr if frame unavailable). Sets dynamic viewport and scissor from the current extent. Flushes deferred destruction queue.
+- `begin_frame()` -> `const vk::raii::CommandBuffer*` (nullptr if frame unavailable). Calls `begin_command_buffer()` + `begin_scene_pass()`. Sets dynamic viewport and scissor from the current extent. Flushes deferred destruction queue.
+- `begin_command_buffer()` -> `const vk::raii::CommandBuffer*` — fence wait, swapchain acquire, begin command buffer (without starting scene render pass). Used by XR path.
+- `begin_scene_pass()` — begins the offscreen scene render pass. Called separately in XR mode after XR eye rendering.
 - `end_frame()` — submits and presents
 - FXAA 3.11 post-processing: the scene renders to an offscreen target, then an FXAA fullscreen pass (quality preset 12 with edge endpoint search) reads it via a combined image sampler descriptor and writes to the swapchain. The FXAA pipeline is built directly, separate from `PipelineBuilder`. The `begin_frame()`/`end_frame()` API is unchanged — glass and voxel are unaware of FXAA.
 - `wait_idle()` — waits for device idle (used for clean shutdown)
@@ -55,7 +57,7 @@ Each subdirectory has its own `CMakeLists.txt`.
 - `window()` -> `SDL_Window*`
 - ImGui: `imgui_begin()`, `imgui_end()`, `imgui_enabled()`, `set_imgui_enabled()`, `imgui_process_event()`
 - Frames in flight: `MAX_FRAMES_IN_FLIGHT` (2, defined in engine.hpp)
-- Accessors: `device()`, `physical_device()`, `render_pass()`, `extent()`, `command_pool()`, `graphics_queue()`, `graphics_family()`, `color_format()`, `depth_format()`, `allocator()`
+- Accessors: `instance()`, `device()`, `physical_device()`, `render_pass()`, `extent()`, `command_pool()`, `graphics_queue()`, `graphics_family()`, `color_format()`, `depth_format()`, `allocator()`
 
 ### steel::UniformBuffer\<T\>
 - Header-only template encapsulating descriptor set layout, pool, per-frame-in-flight sets, buffers, and persistent mapping
@@ -76,6 +78,22 @@ Each subdirectory has its own `CMakeLists.txt`.
 - `Buffer::create(...)` — general buffer creation
 - `map()`, `unmap()` — host-visible memory access
 
+### steel::XrSystem
+- OpenXR integration for HMD stereo rendering via `XR_KHR_vulkan_enable`
+- Static two-phase initialization: `query_requirements()` runs before Vulkan setup (returns required extensions + physical device query), constructor runs after `VkDevice` creation
+- `query_requirements()` -> `optional<XrVulkanRequirements>` — creates XrInstance, queries HMD system, returns required Vulkan extensions. Returns nullopt if no HMD. Stores static XR state for constructor.
+- `query_physical_device(VkInstance)` -> `VkPhysicalDevice` — queries the GPU the XR runtime requires. Used as `EngineConfig::physical_device_query`.
+- `has_pending_session()` — true if `query_requirements()` found an HMD
+- Constructor takes Vulkan handles, creates XrSession, reference space (LOCAL/seated), per-eye swapchains, depth buffers, render pass, and framebuffers
+- `poll_events()` — handles session state transitions (READY→xrBeginSession, STOPPING→xrEndSession)
+- `active()` — true when session is running (between xrBeginSession and xrEndSession)
+- `wait_and_begin_frame(body_position, body_yaw)` -> `XrFrameState` — xrWaitFrame, xrBeginFrame, xrLocateViews. Converts XR poses to engine view matrices with body position/yaw applied. body_yaw rotates the XR reference frame (mouse horizontal look).
+- `begin_eye_render(cmd, eye)` / `end_eye_render(cmd, eye)` — acquire/release XR swapchain image, begin/end render pass into eye framebuffer
+- `end_frame(XrFrameState)` — xrEndFrame with projection layer
+- `eye_extent()` — per-eye render resolution
+- Coordinate transform: OpenXR Y-up → engine Z-up via -90° X rotation
+- Projection: asymmetric frustum from XrFovf with Vulkan Y-flip (negates both `proj[1][1]` and `proj[2][1]`)
+
 ### glass::EventDispatcher
 - `EventDispatcher(engine)` — registers as `steel::Engine`'s sole event callback, fans out SDL events to multiple subscribers
 - `subscribe(callback)` -> `Subscription` — RAII subscription handle; dropping it unsubscribes automatically. Subscribers called in subscription order.
@@ -94,9 +112,12 @@ Each subdirectory has its own `CMakeLists.txt`.
 - `Renderer(engine)` — creates per-frame UBO with separate view and projection matrices
 - `bind_world(world)` — registers pre-destroy callback for automatic GPU resource cleanup (defers `GeometryComponent`-owned geometry via Engine)
 - `set_camera(entity)` — sets the active camera entity
-- `render_frame(world)` — computes view/projection from camera entity's Transform and CameraComponent, updates UBO, renders all entities with Transform + GeometryComponent + MaterialComponent
+- `render_frame(world)` — computes view/projection from camera entity's Transform and CameraComponent, updates UBO, renders all entities with Transform + GeometryComponent + MaterialComponent. Desktop-only path.
+- `render_xr_eyes(cmd, world, frame_index, frame_state, xr)` — renders both eyes into XR swapchains using per-eye UBOs (`xr_eye_ubos_[2]`). Called in XR dual-path mode.
+- `render_desktop_companion(cmd, world, frame_index, xr_view)` — renders desktop companion view. Optional `xr_view` overrides camera orientation to mirror headset. Called in XR dual-path mode after `begin_scene_pass()`.
 - `frame_descriptor_layout()` — exposes UBO descriptor set layout for material pipeline creation
 - `FrameUBO` — `mat4 view` + `mat4 projection` (split for spherical fog computation in vertex shader)
+- Per-eye XR UBOs: separate `UniformBuffer<FrameUBO>` per eye so each eye has its own mapped buffer. Without these, CPU memcpy would overwrite the same buffer before GPU execution.
 
 ### glass::Components
 - `Transform` — `glm::mat4 matrix` (default identity)
@@ -117,11 +138,17 @@ Each subdirectory has its own `CMakeLists.txt`.
 ## Voxel Application
 
 ### voxel::Application
-- Owns Engine, EventDispatcher, Renderer, World, Material, ChunkManager, TerrainGenerator, CameraController
+- Owns Engine, XrSystem (optional), EventDispatcher, Renderer, World, Material, ChunkManager, TerrainGenerator, CameraController
+- `build_engine_config()` — static, calls `XrSystem::query_requirements()` before Engine construction to inject XR Vulkan extensions
+- Constructs `XrSystem` after Engine if `has_pending_session()` is true; graceful desktop-only fallback when no HMD
+- Dual-path main loop: XR mode renders eyes via `render_xr_eyes()` then desktop companion via `render_desktop_companion()`; desktop-only mode uses `render_frame()`
+- XR movement: extracts headset forward from left eye view matrix, projects onto XY plane, passes to CameraController for HMD-relative WASD (one frame latency)
+- Desktop companion mirrors headset view (left eye) when XR is active
 - Subscribes to EventDispatcher with three handlers (in order): ImGui event forwarding (marks mouse events handled when ImGui wants them), mouse capture (Escape releases, click re-captures; blocks motion when not captured), and key shortcuts (F3 ImGui toggle)
 - Member declaration order ensures subscription order: ImGui sub, mouse capture sub, key sub are initialized before CameraController (which also subscribes)
 - Calls `renderer_.bind_world(world_)` for automatic GPU resource cleanup
-- ImGui debug overlay shows FPS and VMA memory statistics
+- ImGui debug overlay shows FPS, VMA memory statistics, and XR status/eye resolution when HMD connected
+- Destructor: `wait_idle()` then destroys XrSystem before Engine (XR owns Vulkan resources)
 
 ### voxel::ChunkManager
 - Dynamic chunk loading/unloading around camera within square radius 32 (65x65 grid)
@@ -163,10 +190,10 @@ Each subdirectory has its own `CMakeLists.txt`.
 - `is_solid_at(lx, ly, wz)`, `is_opaque_at(lx, ly, wz)` — per-column queries using cached heightmap
 
 ### voxel::CameraController
-- Spectator camera: WASD movement on XY plane, Space/Shift for Z, left-click-drag for mouse look
+- Spectator camera: WASD movement on XY plane, Space/Shift for Z, mouse look
 - Subscribes to `glass::EventDispatcher` for KEY_DOWN/KEY_UP and MOUSE_MOTION events; tracks key state and mouse deltas internally
-- `update(dt, world, camera_entity)` — uses internal input state, resets mouse deltas each frame
-- `position()` — current camera position (used by ChunkManager for loading radius)
+- `update(dt, world, camera_entity, move_forward)` — uses internal input state, resets mouse deltas each frame. Optional `move_forward` overrides WASD direction (XR mode: movement follows headset look direction instead of mouse yaw).
+- `yaw()` — current horizontal angle (used by XrSystem for body yaw rotation)
 - Velocity-based physics: acceleration + subtractive friction (proportional to speed), frame-rate independent
 - Sprint: Tab or Ctrl latches sprint on while moving, releases when all move keys released
 - Base speed 22 units/s, sprint speed 44 units/s
