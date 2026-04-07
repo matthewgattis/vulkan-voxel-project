@@ -144,3 +144,37 @@ Provides ECS, rendering, and event dispatch on top of steel.
 - **Application** subscribes to EventDispatcher for ImGui forwarding, mouse capture (click to capture, Escape to release), and key shortcuts (F3 debug overlay toggle). Dual-path main loop: XR stereo rendering + desktop companion mirror when HMD connected, desktop-only otherwise.
 
 On macOS, MoltenVK portability extensions are automatically enabled.
+
+## Design Decisions
+
+### Three-layer separation (steel / glass / voxel)
+
+Steel and glass together form an application-agnostic engine. Steel's job is to hide Vulkan boilerplate — instance, device, swapchain, synchronization — so that higher layers don't have to repeat it. Glass is where common engine constructs live: ECS, event dispatch, rendering, materials. The voxel layer is purely application logic. There's no hard prohibition against using Vulkan API directly in glass or even the application layer; steel is a convenience layer, not an abstraction boundary. Steel and glass are designed to be extracted into a shared engine library for use across multiple projects.
+
+### Sparse-set ECS over an off-the-shelf library
+
+The ECS (Entity, ComponentPool, World, View) uses sparse-set storage for O(1) add/remove/lookup with cache-friendly dense iteration. Entity handles carry a generation counter so stale references are caught rather than silently reused. `View<Ts...>` iterates the smallest matching pool to minimize filtering work. This was implemented from scratch rather than pulling in entt or flecs — partly to keep the implementation fully transparent, but mainly because ECS as a pattern is something I wanted to explore more deeply. Having the full implementation in the codebase captures the ideas behind ECS in a way that importing a library doesn't.
+
+### Deferred GPU resource destruction
+
+When an ECS entity with GPU-owned geometry is destroyed, the buffers can't be freed immediately — they may still be referenced by in-flight command buffers. `Engine::defer_destroy()` holds any moveable resource for `MAX_FRAMES_IN_FLIGHT + 1` frames before dropping it. The renderer hooks into `World::on_destroy` to automatically defer geometry, so application code never manages GPU lifetimes manually.
+
+### Event dispatch with RAII subscriptions
+
+`EventDispatcher` registers as the engine's sole SDL event callback and fans out to multiple subscribers. `subscribe()` returns a move-only `Subscription` handle that unsubscribes on destruction — no manual cleanup, no dangling callbacks. Subscribers receive a `bool& handled` flag for event consumption (e.g. ImGui blocks mouse events from reaching the camera controller).
+
+### OpenXR two-phase initialization
+
+OpenXR needs to tell Vulkan which extensions and physical device to use, but the XR session needs a Vulkan device to be created. This chicken-and-egg problem is solved with two phases: a static `query_requirements()` call before `VkInstance` creation returns the required extensions, then the `XrSystem` constructor runs after the device exists. If no HMD is detected, `query_requirements()` returns `std::nullopt` and the engine falls back to desktop rendering with no XR code in the frame loop.
+
+### Multithreaded chunk loading with frustum prioritization
+
+Chunk generation runs on a `std::jthread` worker pool with cooperative cancellation via `std::stop_token`. Requests are queued by priority: in-frustum chunks first, then by distance. Workers produce CPU-side mesh data only — GPU buffer uploads and ECS entity creation happen on the main thread, avoiding any GPU or ECS synchronization issues. This keeps the threading model simple: workers share nothing with the renderer except two mutex-protected queues.
+
+### Per-vertex ambient occlusion with AO-aware triangulation
+
+Each vertex samples its three adjacent voxel neighbors (two edge, one corner) to compute an AO value from 0–3. When a quad has uneven AO across its diagonal, the triangulation is flipped to place the split along the lower-contrast diagonal, avoiding visual seams. Combined with vertex welding via FNV-1a hashing, this produces clean meshes without duplicated vertices.
+
+### FXAA as a transparent post-process
+
+Scene rendering targets an offscreen image; FXAA reads it and writes to the swapchain. Upper layers don't know FXAA exists — they just call `begin_scene_pass()` and `end_frame()`. This keeps anti-aliasing orthogonal to scene rendering and trivial to swap out.
