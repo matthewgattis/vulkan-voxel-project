@@ -123,7 +123,7 @@ bool ChunkManager::column_in_frustum(const Frustum& frustum, int cx, int cy) {
     // AABB for the column: XY from chunk coords, Z spans full possible height
     float min_x = static_cast<float>(cx * CHUNK_SIZE);
     float min_y = static_cast<float>(cy * CHUNK_SIZE);
-    float min_z = TerrainGenerator::HEIGHT_AMP;
+    float min_z = -TerrainGenerator::HEIGHT_AMP;
     float max_x = min_x + static_cast<float>(CHUNK_SIZE);
     float max_y = min_y + static_cast<float>(CHUNK_SIZE);
     float max_z = TerrainGenerator::HEIGHT_AMP;
