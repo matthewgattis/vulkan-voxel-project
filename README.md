@@ -45,59 +45,40 @@ In VR mode, WASD movement follows the headset look direction. Mouse horizontal m
 ## Project Structure
 
 ```
-├── steel/          Vulkan RAII helpers + OpenXR (namespace: steel)
-│   ├── engine      SDL3 window, Vulkan instance/device/swapchain, deferred GPU resource destruction, FXAA post-processing, ImGui integration
-│   ├── xr_system   OpenXR HMD integration (session lifecycle, stereo swapchains, head tracking, pose conversion)
-│   ├── swapchain   Swapchain, depth buffer, offscreen target, scene render pass
-│   ├── pipeline    Fluent graphics pipeline builder (dynamic viewport/scissor)
-│   ├── buffer      Vertex/index buffer creation with staging upload
-│   ├── uniform_buffer  Header-only per-frame UBO template with descriptor management
-│   ├── fxaa_pass   FXAA 3.11 post-processing pass
-│   ├── imgui_pass  Dear ImGui rendering pass
-│   └── shaders/    Internal GLSL shaders (FXAA 3.11), compiled to embedded SPIR-V at build time
-├── glass/          Engine abstraction layer (namespace: glass)
-│   ├── event_dispatcher  Multi-subscriber event fan-out with RAII subscriptions and handled flag
-│   ├── shader      SPIR-V loader (stage + binary data)
-│   ├── mesh        Abstract data-only mesh interface (vertices/indices spans)
-│   ├── geometry    GPU-side buffers created from a Mesh
-│   ├── material    Shader pipeline wrapper (with descriptor set layout for per-frame UBO)
-│   ├── entity      Lightweight entity handle (index + generation)
-│   ├── component_pool  Sparse-set component storage
-│   ├── world       Entity manager with component operations and pre-destroy callback
-│   ├── view        Multi-component query iterator
-│   ├── components  Transform, GeometryComponent, MaterialComponent, Velocity, CameraComponent
-│   ├── camera      Projection-only perspective camera (view derived from Transform)
-│   ├── renderer    ECS rendering with split view/projection UBO, explicit camera entity, automatic GPU resource cleanup
-│   └── vertex      Shared vertex format (position + normal + color)
-├── voxel/          Application executable (namespace: voxel)
-│   ├── application Voxel terrain renderer with spectator camera and ImGui debug overlay
-│   ├── voxel       VoxelType enum and helpers (Grass, Dirt, Stone, Sand, Snow, Water)
-│   ├── chunk       16x16x16 voxel data storage
-│   ├── chunk_mesh  Mesh generation with per-vertex AO, cross-chunk culling, and vertex welding
-│   ├── chunk_manager  Multithreaded dynamic chunk loading/unloading with frustum prioritization
+├── material-engine/  Git submodule: reusable Vulkan engine library
+│   ├── steel/        Vulkan RAII helpers + OpenXR (namespace: steel)
+│   ├── glass/        Engine abstraction layer (namespace: glass)
+│   └── test/         Engine unit tests
+├── voxel/            Application executable (namespace: voxel)
+│   ├── application   Voxel terrain renderer with spectator camera and ImGui debug overlay
+│   ├── voxel         VoxelType enum and helpers (Grass, Dirt, Stone, Sand, Snow, Water)
+│   ├── chunk         16x16x16 voxel data storage
+│   ├── chunk_mesh    Mesh generation with per-vertex AO, cross-chunk culling, and vertex welding
+│   ├── chunk_manager Multithreaded dynamic chunk loading/unloading with frustum prioritization
 │   ├── terrain_generator  Multi-octave fBm terrain with TerrainColumn heightmap caching
 │   ├── camera_controller  Spectator camera with velocity physics, sprint, and event-driven input
-│   ├── shaders/    GLSL shaders (compiled to SPIR-V via glslc)
-│   └── main        Entry point
-├── docs/           Design notes and scaling documentation
-└── test/           Google Test suite
+│   ├── shaders/      GLSL shaders (compiled to SPIR-V via glslc)
+│   └── main          Entry point
+└── docs/             Design notes and scaling documentation
 ```
+
+The `steel` and `glass` engine libraries live in the [material-engine](material-engine/) submodule. See `material-engine/README.md` for engine details.
 
 ## Dependencies
 
-Managed via [vcpkg](https://github.com/microsoft/vcpkg) (included as a git submodule):
+Managed via [vcpkg](https://github.com/microsoft/vcpkg) (included as a git submodule). The root `vcpkg.json` must include dependencies for both the application and the material-engine submodule — material-engine's own manifest is only used for its standalone builds.
 
-| Package | Purpose |
-|---------|---------|
-| vulkan | Graphics API |
-| vulkan-memory-allocator | GPU memory management |
-| glm | Linear algebra (noise, transforms) |
-| sdl3 | Windowing and input |
-| imgui | Debug overlay |
-| shaderc | GLSL to SPIR-V compilation (provides `glslc`) |
-| gtest | Testing framework |
-| openxr-loader | OpenXR HMD support |
-| spdlog | Structured logging |
+| Package | Used by | Purpose |
+|---------|---------|---------|
+| vulkan | material-engine | Graphics API |
+| vulkan-memory-allocator | material-engine | GPU memory management |
+| glm | material-engine | Linear algebra (noise, transforms) |
+| sdl3 | material-engine | Windowing and input |
+| spdlog | material-engine | Structured logging |
+| imgui | material-engine | Debug overlay |
+| openxr-loader | material-engine | OpenXR HMD support |
+| shaderc | material-engine | GLSL to SPIR-V compilation (provides `glslc`) |
+| gtest | voxel-project | Testing framework |
 
 ## CMake Presets
 
@@ -149,7 +130,7 @@ On macOS, MoltenVK portability extensions are automatically enabled.
 
 ### Three-layer separation (steel / glass / voxel)
 
-Steel and glass together form an application-agnostic engine. Steel's job is to hide Vulkan boilerplate — instance, device, swapchain, synchronization — so that higher layers don't have to repeat it. Glass is where common engine constructs live: ECS, event dispatch, rendering, materials. The voxel layer is purely application logic. There's no hard prohibition against using Vulkan API directly in glass or even the application layer; steel is a convenience layer, not an abstraction boundary. Steel and glass are designed to be extracted into a shared engine library for use across multiple projects.
+Steel and glass together form an application-agnostic engine, maintained as a separate repo ([material-engine](material-engine/)) and pulled in as a git submodule. Steel's job is to hide Vulkan boilerplate — instance, device, swapchain, synchronization — so that higher layers don't have to repeat it. Glass is where common engine constructs live: ECS, event dispatch, rendering, materials. The voxel layer is purely application logic. There's no hard prohibition against using Vulkan API directly in glass or even the application layer; steel is a convenience layer, not an abstraction boundary.
 
 ### Sparse-set ECS over an off-the-shelf library
 

@@ -21,7 +21,5 @@ find_package(OpenXR CONFIG REQUIRED)
 
 enable_testing()
 
-add_subdirectory(steel)
-add_subdirectory(glass)
+add_subdirectory(material-engine)
 add_subdirectory(voxel)
-add_subdirectory(test)
