@@ -23,3 +23,4 @@ enable_testing()
 
 add_subdirectory(material-engine)
 add_subdirectory(voxel)
+add_subdirectory(test)
