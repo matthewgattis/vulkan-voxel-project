@@ -1,3 +1,6 @@
 [submodule "vcpkg"]
 	path = vcpkg
 	url = https://github.com/microsoft/vcpkg.git
+[submodule "material-engine"]
+	path = material-engine
+	url = https://github.com/matthewgattis/material-engine.git

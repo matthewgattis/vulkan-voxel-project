@@ -16,11 +16,11 @@ Requires: CMake 3.25+, C++23 compiler, Vulkan-capable GPU. All dependencies (inc
 
 ## Code Organization
 
-- **Top-level CMakeLists.txt**: Only finds packages and adds subdirectories. Do not add targets here.
-- **steel/**: Vulkan RAII engine library. Namespace `steel`. Links against Vulkan, GLM, SDL3.
-- **glass/**: Engine abstraction layer. Namespace `glass`. Links against `steel`. Provides meshes, materials, ECS (Entity Component System), event dispatch, and rendering abstractions built on top of steel's Vulkan wrappers.
+- **Top-level CMakeLists.txt**: Finds packages and adds subdirectories. Do not add targets here.
+- **material-engine/**: Git submodule containing the `steel` and `glass` engine libraries. See `material-engine/AGENTS.md` for engine internals.
+  - **steel/**: Vulkan RAII engine library. Namespace `steel`. Links against Vulkan, GLM, SDL3, spdlog, imgui, VMA, OpenXR.
+  - **glass/**: Engine abstraction layer. Namespace `glass`. Links against `steel`. Provides meshes, materials, ECS (Entity Component System), event dispatch, and rendering abstractions.
 - **voxel/**: Application executable. Namespace `voxel`. Links against `glass`.
-- **test/**: Google Test suite. Links against `steel`, `glass`, and GTest.
 
 Each subdirectory has its own `CMakeLists.txt`.
 
@@ -201,10 +201,8 @@ Each subdirectory has its own `CMakeLists.txt`.
 
 ## Adding New Code
 
-- New steel features: add files under `steel/src/` and `steel/include/steel/`, update `steel/CMakeLists.txt`
-- New glass features: add files under `glass/src/` and `glass/include/glass/`, update `glass/CMakeLists.txt`
+- New steel/glass features: make changes in the `material-engine/` submodule, commit there, then update the submodule ref in this repo
 - New application features: add under `voxel/src/` and `voxel/include/voxel/`, update `voxel/CMakeLists.txt`
-- New tests: add `.cpp` files under `test/`, update `test/CMakeLists.txt`
 - New application shaders: add `.vert`/`.frag` under `voxel/shaders/`, add to `SHADERS` list in `voxel/CMakeLists.txt`
-- New engine shaders: add `.vert`/`.frag` under `steel/shaders/`, update `steel/CMakeLists.txt` to compile and embed them
-- New dependencies: add to `vcpkg.json`, `find_package()` in top-level CMakeLists.txt, link in the appropriate subdirectory
+- New application dependencies: add to `vcpkg.json`, `find_package()` in top-level CMakeLists.txt, link in `voxel/CMakeLists.txt`
+- New engine dependencies: add to `material-engine/vcpkg.json` and the parent `vcpkg.json`
