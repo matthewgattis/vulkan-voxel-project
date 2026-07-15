@@ -1,7 +1,6 @@
 #pragma once
 
 #include <steel/engine.hpp>
-#include <steel/xr_system.hpp>
 #include <glass/event_dispatcher.hpp>
 #include <glass/shader.hpp>
 #include <glass/geometry.hpp>
@@ -15,8 +14,6 @@
 #include <voxel/camera_controller.hpp>
 #include <voxel/chunk_manager.hpp>
 #include <voxel/terrain_generator.hpp>
-
-#include <memory>
 
 namespace voxel {
 
@@ -36,7 +33,6 @@ private:
     static steel::EngineConfig build_engine_config();
 
     steel::Engine engine_;
-    std::unique_ptr<steel::XrSystem> xr_system_;
     glass::EventDispatcher event_dispatcher_;
     glass::Renderer renderer_;
     glass::Material material_;
@@ -54,10 +50,6 @@ private:
 
     // Mouse capture state (not captured by default, Escape releases, click re-captures)
     bool mouse_captured_ = false;
-
-    // XR movement direction (headset forward projected onto XY plane).
-    // Stored from the previous frame since XR state is obtained after controller update.
-    glm::vec3 xr_move_forward_{0.0f, 1.0f, 0.0f};
 
     // FPS display (updated once per second)
     float fps_display_ = 0.0f;

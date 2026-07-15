@@ -1,5 +1,7 @@
 build/
+build-release/
 cmake-build-*/
+imgui.ini
 .cache/
 .idea/
 .vscode/
